@@ -1,5 +1,6 @@
 <script lang="ts">
 	import {
+		abilities,
 		accuracySkillBonus,
 		ammo,
 		armour,
@@ -19,9 +20,11 @@
 		type Armour,
 		type BoostableSkill,
 		type CombatStyle,
+		type GearContext,
 		type Prayer,
 		type SkillBoost,
 		type Spell,
+		type TimelinePlacement,
 		type Weapon,
 		type WeaponConfig
 	} from '$lib';
@@ -29,6 +32,7 @@
 	import MonsterPanel from '$lib/components/MonsterPanel.svelte';
 	import Combobox from '$lib/components/Combobox.svelte';
 	import ItemStatPopover from '$lib/components/ItemStatPopover.svelte';
+	import Timeline from '$lib/components/Timeline.svelte';
 
 	type TabId = 'stats' | 'gear' | 'prayers' | 'config';
 	type GearSlotId =
@@ -487,6 +491,9 @@
 		hasVulnBomb: boolean;
 		hasSmokeCloud: boolean;
 		weaponPoison: (typeof WEAPON_POISON_OPTIONS)[number];
+		timelinePlacements: TimelinePlacement[];
+		timelineStyleFilterEnabled: boolean;
+		timelineLength: number;
 	}
 
 	const PERSISTENCE_KEY = 'rs3-dps-calc:sheet';
@@ -558,6 +565,23 @@
 			) {
 				weaponPoison = saved.weaponPoison;
 			}
+
+			if (
+				Array.isArray(saved.timelinePlacements) &&
+				saved.timelinePlacements.every(
+					(p) =>
+						p &&
+						typeof p.id === 'string' &&
+						typeof p.abilityName === 'string' &&
+						typeof p.startTick === 'number'
+				)
+			) {
+				timelinePlacements = saved.timelinePlacements;
+			}
+			if (typeof saved.timelineStyleFilterEnabled === 'boolean') {
+				timelineStyleFilterEnabled = saved.timelineStyleFilterEnabled;
+			}
+			if (typeof saved.timelineLength === 'number') timelineLength = saved.timelineLength;
 		} catch {
 			// Corrupt or pre-format localStorage entry -- ignore and start fresh rather than
 			// throwing on load.
@@ -597,7 +621,10 @@
 			hasStatiusWarhammer,
 			hasVulnBomb,
 			hasSmokeCloud,
-			weaponPoison
+			weaponPoison,
+			timelinePlacements,
+			timelineStyleFilterEnabled,
+			timelineLength
 		};
 		if (!hasRestored) return;
 		localStorage.setItem(PERSISTENCE_KEY, JSON.stringify(snapshot));
@@ -751,6 +778,18 @@
 		} catch (e) {
 			return { value: null, error: e instanceof Error ? e.message : String(e) };
 		}
+	});
+
+	// --- Rotation timeline ---
+	let timelinePlacements: TimelinePlacement[] = $state([]);
+	let timelineStyleFilterEnabled: boolean = $state(true);
+	let timelineLength: number = $state(100);
+
+	const adTotal = $derived(result.value?.total ?? 0);
+	const timelineGearContext = $derived<GearContext>({
+		isTwoHanded: mainHandIsTwoHanded,
+		hasOffHandWeapon: !!offHandWeapon,
+		equippedCapeName: capeArmour?.name ?? null
 	});
 
 	// --- Accuracy, per https://runescape.wiki/w/Combat_Stats ---
@@ -1493,6 +1532,18 @@
 	</div>
 </div>
 
+<div class="timeline-section">
+	<Timeline
+		{abilities}
+		{combatStyle}
+		{adTotal}
+		gearContext={timelineGearContext}
+		bind:placements={timelinePlacements}
+		bind:styleFilterEnabled={timelineStyleFilterEnabled}
+		bind:timelineLength
+	/>
+</div>
+
 <!-- Guarantees scroll room below the page content so an open combobox popover anchored to an
      input near the bottom of the viewport always has space to render below it, rather than
      the browser flipping/clamping the popup on top of the input it belongs to. -->
@@ -1569,6 +1620,12 @@
 		flex-direction: column;
 		gap: 1.25rem;
 		min-width: 0;
+	}
+
+	.timeline-section {
+		max-width: 90rem;
+		margin: 0 auto;
+		padding: 0 1.5rem 1.5rem;
 	}
 
 	.hud-window {
