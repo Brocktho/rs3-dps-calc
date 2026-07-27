@@ -5,6 +5,7 @@ export * from './formulas/armourRating';
 export * from './formulas/accuracy';
 export * from './formulas/skillBoost';
 export * from './formulas/hitChance';
+export * from './formulas/timeline';
 export * from './data/spells';
 export * from './data/weapons';
 export * from './data/ammo';
