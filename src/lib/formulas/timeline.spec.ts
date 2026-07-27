@@ -5,6 +5,7 @@ import {
 	abilityDamageForPlacement,
 	BERSERK_BASIC_MULTIPLIER_MODIFIER,
 	BERSERK_BLOODLUST_CAP_MODIFIER,
+	buffBaseEndTick,
 	canPlaceAbility,
 	clearConflictingUses,
 	colorForAbility,
@@ -15,6 +16,7 @@ import {
 	effectiveCooldownTicks,
 	findSwapTarget,
 	gcdPlacementAt,
+	groupBuffExtensions,
 	hitCountFor,
 	IMBUE_SHADOWS_ADRENALINE_MODIFIER,
 	insertAbilityAtAnchor,
@@ -23,6 +25,7 @@ import {
 	packIntoLanes,
 	parseBloodlustConsume,
 	parseBloodlustGenerate,
+	parseBuffExtension,
 	parseBuffInfo,
 	parseCooldownTicks,
 	parseDamageMultiplier,
@@ -57,7 +60,13 @@ const meteorStrike = abilities.find((a) => a.name === 'Meteor Strike')!;
 const rangedBasic = abilities.find((a) => a.name === 'Ranged')!;
 const ricochet = abilities.find((a) => a.name === 'Ricochet')!;
 const imbueShadows = abilities.find((a) => a.name === 'Imbue: Shadows')!;
+const deadshot = abilities.find((a) => a.name === 'Deadshot')!; // type: 'Ultimate', adrenaline: -60
+const rapidFire = abilities.find((a) => a.name === 'Rapid Fire')!; // channelled, 8 hits, adrenaline: -25
+const greaterDeathsSwiftness = abilities.find((a) => a.name === "Greater Death's Swiftness")!; // target: 'Self'
 const hurricane = abilities.find((a) => a.name === 'Hurricane')!;
+const galeshot = abilities.find((a) => a.name === 'Galeshot')!; // applies "Searing Winds" self-buff, 10 ticks
+const shadowTendrils = abilities.find((a) => a.name === 'Shadow Tendrils')!; // extends Shadow imbued +6 ticks
+const greaterFlurry = abilities.find((a) => a.name === 'Greater Flurry')!; // channelled, 8 hits, extends Berserk +1/hit
 
 const NEUTRAL_GEAR: GearContext = {
 	isTwoHanded: false,
@@ -218,15 +227,13 @@ describe('parseBuffInfo', () => {
 
 describe('resolveChannels', () => {
 	it("computes Assault's natural hit ticks (0, 2, 4, 6) with no interruption", () => {
-		const placements: TimelinePlacement[] = [
-			{ id: 'a', abilityName: assault.name, startTick: 0 }
-		];
+		const placements: TimelinePlacement[] = [{ id: 'a', abilityName: assault.name, startTick: 0 }];
 		const [resolved] = resolveChannels(placements, abilities, 100);
 		expect(resolved.hitTicks).toEqual([0, 2, 4, 6]);
 		expect(resolved.barEndTick).toBe(7);
 	});
 
-	it('truncates surviving hits when a later GCD ability interrupts the channel (matches the user\'s own example: only 2 of 4 Assault hits land)', () => {
+	it("truncates surviving hits when a later GCD ability interrupts the channel (matches the user's own example: only 2 of 4 Assault hits land)", () => {
 		const placements: TimelinePlacement[] = [
 			{ id: 'a', abilityName: assault.name, startTick: 0 },
 			{ id: 'b', abilityName: rend.name, startTick: 3 }
@@ -246,22 +253,183 @@ describe('resolveChannels', () => {
 	});
 });
 
+describe('parseBuffExtension', () => {
+	it("parses Shadow Tendrils' single extension of Shadow imbued (+6 ticks)", () => {
+		expect(parseBuffExtension(shadowTendrils)).toEqual({
+			buffDisplayName: 'Shadow imbued',
+			extendTicks: 6
+		});
+	});
+
+	it("parses Rapid Fire's per-attack extension of Searing Winds (+1 tick)", () => {
+		expect(parseBuffExtension(rapidFire)).toEqual({
+			buffDisplayName: 'Searing Winds',
+			extendTicks: 1
+		});
+	});
+
+	it("parses Greater Flurry's per-attack extension of Berserk (+1 tick)", () => {
+		expect(parseBuffExtension(greaterFlurry)).toEqual({
+			buffDisplayName: 'Berserk',
+			extendTicks: 1
+		});
+	});
+
+	it('returns null for an ability with no extension clause', () => {
+		expect(parseBuffExtension(rend)).toBeNull();
+	});
+});
+
 describe('resolveBuffs', () => {
 	it("resolves Berserk's active window from its placement", () => {
-		const placements: TimelinePlacement[] = [
-			{ id: 'a', abilityName: berserk.name, startTick: 10 }
-		];
+		const placements: TimelinePlacement[] = [{ id: 'a', abilityName: berserk.name, startTick: 10 }];
 		const [resolved] = resolveBuffs(placements, abilities, 100);
 		expect(resolved.startTick).toBe(10);
 		expect(resolved.endTick).toBe(43);
 	});
 
 	it('clips the end tick to the timeline length', () => {
-		const placements: TimelinePlacement[] = [
-			{ id: 'a', abilityName: berserk.name, startTick: 10 }
-		];
+		const placements: TimelinePlacement[] = [{ id: 'a', abilityName: berserk.name, startTick: 10 }];
 		const [resolved] = resolveBuffs(placements, abilities, 20);
 		expect(resolved.endTick).toBe(20);
+	});
+
+	it("Shadow Tendrils extends Imbue: Shadows' buff window by 6 ticks on a single cast", () => {
+		// Imbue: Shadows: 50-tick buff (30s), starts tick 0 -> ends tick 50.
+		const placements: TimelinePlacement[] = [
+			{ id: 'a', abilityName: imbueShadows.name, startTick: 0 },
+			{ id: 'b', abilityName: shadowTendrils.name, startTick: 5 }
+		];
+		const [buff] = resolveBuffs(placements, abilities, 100);
+		expect(buff.abilityName).toBe('Imbue: Shadows');
+		expect(buff.endTick).toBe(56);
+		expect(buff.extensions).toEqual([
+			{ tick: 5, extendTicks: 6, sourceAbilityName: 'Shadow Tendrils' }
+		]);
+	});
+
+	it('does not extend a buff that already expired before the extending cast', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'a', abilityName: imbueShadows.name, startTick: 0 },
+			{ id: 'b', abilityName: shadowTendrils.name, startTick: 60 } // long after Imbue's 50-tick window
+		];
+		const [buff] = resolveBuffs(placements, abilities, 100);
+		expect(buff.endTick).toBe(50);
+	});
+
+	it("Rapid Fire extends Galeshot's Searing Winds buff by 1 tick per hit (8 hits -> +8 total)", () => {
+		// Galeshot: 10-tick buff, starts tick 0 -> ends tick 10.
+		// Rapid Fire (8 hits, interval 1) cast at tick 2 hits at 2,3,4,5,6,7,8,9 -- every hit
+		// lands before the buff's (extending) end tick, so all 8 extensions apply.
+		const placements: TimelinePlacement[] = [
+			{ id: 'a', abilityName: galeshot.name, startTick: 0 },
+			{ id: 'b', abilityName: rapidFire.name, startTick: 2 }
+		];
+		const [buff] = resolveBuffs(placements, abilities, 100);
+		expect(buff.abilityName).toBe('Galeshot');
+		expect(buff.endTick).toBe(18);
+		expect(buff.extensions).toHaveLength(8);
+		expect(buff.extensions.map((e) => e.tick)).toEqual([2, 3, 4, 5, 6, 7, 8, 9]);
+		expect(buff.extensions.every((e) => e.sourceAbilityName === 'Rapid Fire')).toBe(true);
+		expect(buff.extensions.every((e) => e.extendTicks === 1)).toBe(true);
+	});
+
+	it('only extends hits that land while the buff (as extended so far) is still active', () => {
+		// Galeshot: 10-tick buff, starts tick 0 -> ends tick 10. Rapid Fire cast late, at tick 8,
+		// hits at 8,9,10,11,12,13,14,15. Only the tick-8 and tick-9 hits land before the buff's
+		// still-10 end tick; each extends it by 1, so after the tick-8 hit endTick becomes 11,
+		// which the tick-9 hit still beats (9 < 11) extending it again to 12. The tick-10 hit
+		// arrives exactly at the (now 12) end tick, which is still < 12, so it also lands... this
+		// keeps going until a hit tick is not < the current end tick.
+		const placements: TimelinePlacement[] = [
+			{ id: 'a', abilityName: galeshot.name, startTick: 0 },
+			{ id: 'b', abilityName: rapidFire.name, startTick: 8 }
+		];
+		const [buff] = resolveBuffs(placements, abilities, 100);
+		// Hits at 8,9,10,11,12,13,14,15 vs a running end tick starting at 10:
+		// 8<10 -> end=11; 9<11 -> end=12; 10<12 -> end=13; 11<13 -> end=14; 12<14 -> end=15;
+		// 13<15 -> end=16; 14<16 -> end=17; 15<17 -> end=18. All 8 hits land.
+		expect(buff.endTick).toBe(18);
+	});
+});
+
+describe('buffBaseEndTick', () => {
+	it("returns the buff's own endTick unchanged when it was never extended", () => {
+		const placements: TimelinePlacement[] = [{ id: 'a', abilityName: berserk.name, startTick: 0 }];
+		const [buff] = resolveBuffs(placements, abilities, 100);
+		expect(buffBaseEndTick(buff)).toBe(buff.endTick);
+	});
+
+	it('backs out every applied extension to recover the pre-extension endTick', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'a', abilityName: galeshot.name, startTick: 0 },
+			{ id: 'b', abilityName: rapidFire.name, startTick: 2 }
+		];
+		const [buff] = resolveBuffs(placements, abilities, 100);
+		// Galeshot's own buff duration is 10 ticks, unaffected by however Rapid Fire extended it.
+		expect(buffBaseEndTick(buff)).toBe(10);
+	});
+});
+
+describe('groupBuffExtensions', () => {
+	it('returns an empty array for a buff with no extensions', () => {
+		expect(groupBuffExtensions([], 10)).toEqual([]);
+	});
+
+	it("collapses Rapid Fire's 8 individual +1-tick hits into a single group", () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'a', abilityName: galeshot.name, startTick: 0 },
+			{ id: 'b', abilityName: rapidFire.name, startTick: 2 }
+		];
+		const [buff] = resolveBuffs(placements, abilities, 100);
+		const groups = groupBuffExtensions(buff.extensions, buffBaseEndTick(buff));
+		// Galeshot's own 10-tick buff would naturally end at tick 10 -- the highlighted region
+		// covers only the 8 ticks actually added by Rapid Fire's hits (10 -> 18), not the whole
+		// span back to when Rapid Fire was first cast.
+		expect(groups).toEqual([
+			{
+				sourceAbilityName: 'Rapid Fire',
+				startTick: 10,
+				endTick: 18,
+				totalExtendTicks: 8,
+				eventCount: 8
+			}
+		]);
+	});
+
+	it('keeps a single one-off extension as its own group of size 1', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'a', abilityName: imbueShadows.name, startTick: 0 },
+			{ id: 'b', abilityName: shadowTendrils.name, startTick: 5 }
+		];
+		const [buff] = resolveBuffs(placements, abilities, 100);
+		const groups = groupBuffExtensions(buff.extensions, buffBaseEndTick(buff));
+		// Imbue: Shadows' own 50-tick buff would naturally end at tick 50 -- the highlighted
+		// region covers only the 6 added ticks (50 -> 56), not the whole span back to when
+		// Shadow Tendrils was cast (tick 5).
+		expect(groups).toEqual([
+			{
+				sourceAbilityName: 'Shadow Tendrils',
+				startTick: 50,
+				endTick: 56,
+				totalExtendTicks: 6,
+				eventCount: 1
+			}
+		]);
+	});
+
+	it('starts a new group when the extending source ability changes', () => {
+		const groups = groupBuffExtensions(
+			[
+				{ tick: 2, extendTicks: 1, sourceAbilityName: 'Rapid Fire' },
+				{ tick: 3, extendTicks: 1, sourceAbilityName: 'Rapid Fire' },
+				{ tick: 20, extendTicks: 6, sourceAbilityName: 'Shadow Tendrils' }
+			],
+			10
+		);
+		expect(groups).toHaveLength(2);
+		expect(groups[0]).toMatchObject({ sourceAbilityName: 'Rapid Fire', eventCount: 2 });
+		expect(groups[1]).toMatchObject({ sourceAbilityName: 'Shadow Tendrils', eventCount: 1 });
 	});
 });
 
@@ -280,7 +448,7 @@ describe('effectiveCooldownTicks', () => {
 		expect(effectiveCooldownTicks(overpower, 0, placements, abilities, 100)).toBe(50);
 	});
 
-	it("uses the reduced 15-tick cooldown when Berserk is active at the cast tick", () => {
+	it('uses the reduced 15-tick cooldown when Berserk is active at the cast tick', () => {
 		const placements: TimelinePlacement[] = [
 			{ id: 'a', abilityName: overpower.name, startTick: 10 },
 			{ id: 'b', abilityName: berserk.name, startTick: 5 } // active roughly ticks 5-38
@@ -394,6 +562,22 @@ describe('nextOpenTick respects cooldown', () => {
 		const placements: TimelinePlacement[] = [{ id: 'a', abilityName: rend.name, startTick: 0 }];
 		// Rend's own GCD only blocks ticks 0-2, but its 17-tick cooldown blocks reuse until tick 17.
 		expect(nextOpenTick(rend, placements, abilities, 100)).toBe(17);
+	});
+
+	it("skips past a channelled ability's FULL natural duration, not just its 3-tick GCD block (Rapid Fire: 8 hits over 8 ticks)", () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'a', abilityName: rapidFire.name, startTick: 0 }
+		];
+		// Rapid Fire's own GCD block is only ticks 0-2 (any other ability's canPlaceAbility check
+		// would allow tick 3), but its channel's last hit lands at tick 7, so the natural window
+		// runs through tick 7 -- click-to-place should land Rend at tick 8, not 3, so Rapid Fire
+		// gets to finish uninterrupted.
+		expect(nextOpenTick(rend, placements, abilities, 100)).toBe(8);
+	});
+
+	it('does not apply channel-skipping to a non-channelled existing placement (only its own 3-tick GCD block matters)', () => {
+		const placements: TimelinePlacement[] = [{ id: 'a', abilityName: fury.name, startTick: 0 }];
+		expect(nextOpenTick(rend, placements, abilities, 100)).toBe(3);
 	});
 });
 
@@ -596,9 +780,7 @@ describe('insertAbilityAtAnchor', () => {
 	});
 
 	it('returns null when the anchor does not exist', () => {
-		const placements: TimelinePlacement[] = [
-			{ id: 'a', abilityName: rend.name, startTick: 0 }
-		];
+		const placements: TimelinePlacement[] = [{ id: 'a', abilityName: rend.name, startTick: 0 }];
 		expect(
 			insertAbilityAtAnchor(placements, abilities, meteorStrike, 'missing', 'before', 'new')
 		).toBeNull();
@@ -624,17 +806,13 @@ describe('requiredTimelineLength', () => {
 	});
 
 	it("accounts for a buff's full duration, even past its GCD span", () => {
-		const placements: TimelinePlacement[] = [
-			{ id: 'a', abilityName: berserk.name, startTick: 10 }
-		];
+		const placements: TimelinePlacement[] = [{ id: 'a', abilityName: berserk.name, startTick: 10 }];
 		// Berserk: GCD span ends at 13, but its 33-tick buff duration reaches 43.
 		expect(requiredTimelineLength(placements, abilities)).toBe(43);
 	});
 
 	it("accounts for a channel's natural hit window, even past its GCD span", () => {
-		const placements: TimelinePlacement[] = [
-			{ id: 'a', abilityName: assault.name, startTick: 10 }
-		];
+		const placements: TimelinePlacement[] = [{ id: 'a', abilityName: assault.name, startTick: 10 }];
 		// Assault: GCD span ends at 13, but hits land through tick 16 (10 + 3*2), window end 17.
 		expect(requiredTimelineLength(placements, abilities)).toBe(17);
 	});
@@ -690,11 +868,25 @@ describe('hitCountFor', () => {
 });
 
 describe('resolveAspect', () => {
-	const ctx: ModifierContext = { combatStyle: 'ranged', ringOfVigourActive: false, furyOfTheSmallActive: false };
-	const imbueWindow = [{ placementId: 'x', abilityName: 'Imbue: Shadows', startTick: 0, endTick: 10 }];
+	const ctx: ModifierContext = {
+		combatStyle: 'ranged',
+		ringOfVigourActive: false,
+		furyOfTheSmallActive: false
+	};
+	const imbueWindow = [
+		{ placementId: 'x', abilityName: 'Imbue: Shadows', startTick: 0, endTick: 10, extensions: [] }
+	];
 
 	it("Imbue: Shadows' generateBonus is 0 with no active buff window", () => {
-		const result = resolveAspect([IMBUE_SHADOWS_ADRENALINE_MODIFIER], 'adrenaline', 'generateBonus', 0, [], ctx, rangedBasic);
+		const result = resolveAspect(
+			[IMBUE_SHADOWS_ADRENALINE_MODIFIER],
+			'adrenaline',
+			'generateBonus',
+			0,
+			[],
+			ctx,
+			rangedBasic
+		);
 		expect(result.additive).toBe(0);
 	});
 
@@ -711,7 +903,7 @@ describe('resolveAspect', () => {
 		expect(result.additive).toBe(5);
 	});
 
-	it('scales the bonus by hit count (Ricochet: +15 for 3 hits)', () => {
+	it("applies a flat 5 per call regardless of the ability's own hit count (Ricochet) -- hit-count scaling is resolveResource's job via one call per hit tick, not resolveAspect's", () => {
 		const result = resolveAspect(
 			[IMBUE_SHADOWS_ADRENALINE_MODIFIER],
 			'adrenaline',
@@ -721,10 +913,18 @@ describe('resolveAspect', () => {
 			ctx,
 			ricochet
 		);
-		expect(result.additive).toBe(15);
+		expect(result.additive).toBe(5);
 	});
 
-	it('does not apply the bonus to a spend (cost) ability', () => {
+	it('applies the bonus to a Ranged Ultimate that still lands a hit (Deadshot), not just generating abilities', () => {
+		// Regression test: Imbue: Shadows previously gated on `ability.adrenaline > 0`, which
+		// wrongly excluded every Enhanced/Ultimate Ranged attack (their adrenaline field is
+		// negative, since they cost rather than generate) -- confirmed against the wiki, which
+		// has no such restriction ("Ranged attacks against your target generate 5% Adrenaline
+		// with each hit"), and directly by the user via a rotation that relies on Rapid Fire,
+		// Shadow Tendrils, and Deadshot all gaining Imbue: Shadows adrenaline, and by the user's
+		// report that Deadshot's Ring of Vigour interaction wasn't reflecting this bonus at all.
+		// See the `resolveAdrenaline` describe block below for the full 8-hits-worth-40 scenario.
 		const result = resolveAspect(
 			[IMBUE_SHADOWS_ADRENALINE_MODIFIER],
 			'adrenaline',
@@ -732,13 +932,48 @@ describe('resolveAspect', () => {
 			0,
 			imbueWindow,
 			ctx,
+			deadshot
+		);
+		expect(result.additive).toBe(5);
+	});
+
+	it("does not apply the bonus to a self-targeted buff (Greater Death's Swiftness), since it never hits the target", () => {
+		const result = resolveAspect(
+			[IMBUE_SHADOWS_ADRENALINE_MODIFIER],
+			'adrenaline',
+			'generateBonus',
+			0,
+			imbueWindow,
+			ctx,
+			greaterDeathsSwiftness
+		);
+		expect(result.additive).toBe(0);
+	});
+
+	it('does not apply the bonus to melee abilities regardless of hit/target shape (Overpower)', () => {
+		const meleeCtx: ModifierContext = {
+			combatStyle: 'melee',
+			ringOfVigourActive: false,
+			furyOfTheSmallActive: false
+		};
+		const result = resolveAspect(
+			[IMBUE_SHADOWS_ADRENALINE_MODIFIER],
+			'adrenaline',
+			'generateBonus',
+			0,
+			imbueWindow,
+			meleeCtx,
 			overpower
 		);
 		expect(result.additive).toBe(0);
 	});
 
 	it('does not apply the bonus outside of Ranged', () => {
-		const meleeCtx: ModifierContext = { combatStyle: 'melee', ringOfVigourActive: false, furyOfTheSmallActive: false };
+		const meleeCtx: ModifierContext = {
+			combatStyle: 'melee',
+			ringOfVigourActive: false,
+			furyOfTheSmallActive: false
+		};
 		const result = resolveAspect(
 			[IMBUE_SHADOWS_ADRENALINE_MODIFIER],
 			'adrenaline',
@@ -752,13 +987,33 @@ describe('resolveAspect', () => {
 	});
 
 	it('Ring of Vigour costRefund is 0 when the passive is off', () => {
-		const result = resolveAspect([RING_OF_VIGOUR_MODIFIER], 'adrenaline', 'costRefund', 0, [], ctx, berserk);
+		const result = resolveAspect(
+			[RING_OF_VIGOUR_MODIFIER],
+			'adrenaline',
+			'costRefund',
+			0,
+			[],
+			ctx,
+			berserk
+		);
 		expect(result.additive).toBe(0);
 	});
 
 	it('Ring of Vigour costRefund is +10 for an Ultimate spend when active', () => {
-		const activeCtx: ModifierContext = { combatStyle: 'melee', ringOfVigourActive: true, furyOfTheSmallActive: false };
-		const result = resolveAspect([RING_OF_VIGOUR_MODIFIER], 'adrenaline', 'costRefund', 0, [], activeCtx, berserk);
+		const activeCtx: ModifierContext = {
+			combatStyle: 'melee',
+			ringOfVigourActive: true,
+			furyOfTheSmallActive: false
+		};
+		const result = resolveAspect(
+			[RING_OF_VIGOUR_MODIFIER],
+			'adrenaline',
+			'costRefund',
+			0,
+			[],
+			activeCtx,
+			berserk
+		);
 		expect(result.additive).toBe(10);
 	});
 
@@ -769,16 +1024,30 @@ describe('resolveAspect', () => {
 			appliesToAbility: undefined,
 			isActive: () => true
 		};
-		const result = resolveAspect([RING_OF_VIGOUR_MODIFIER, flatFive], 'adrenaline', 'costRefund', 0, [], {
-			combatStyle: 'melee',
-			ringOfVigourActive: true
-		}, berserk);
+		const result = resolveAspect(
+			[RING_OF_VIGOUR_MODIFIER, flatFive],
+			'adrenaline',
+			'costRefund',
+			0,
+			[],
+			{
+				combatStyle: 'melee',
+				ringOfVigourActive: true
+			},
+			berserk
+		);
 		expect(result.additive).toBe(15); // 10 (Ring of Vigour) + 5
 	});
 
 	it('multiply-operation modifiers on the same aspect combine as a product', () => {
-		const berserkCtx: ModifierContext = { combatStyle: 'melee', ringOfVigourActive: false, furyOfTheSmallActive: false };
-		const berserkWindow = [{ placementId: 'b', abilityName: 'Berserk', startTick: 0, endTick: 10 }];
+		const berserkCtx: ModifierContext = {
+			combatStyle: 'melee',
+			ringOfVigourActive: false,
+			furyOfTheSmallActive: false
+		};
+		const berserkWindow = [
+			{ placementId: 'b', abilityName: 'Berserk', startTick: 0, endTick: 10, extensions: [] }
+		];
 		const doubleAgain: typeof BERSERK_BASIC_MULTIPLIER_MODIFIER = {
 			...BERSERK_BASIC_MULTIPLIER_MODIFIER,
 			effect: { operation: 'multiply', value: 3 }
@@ -796,7 +1065,9 @@ describe('resolveAspect', () => {
 	});
 
 	it('an override-operation modifier wins for the cap aspect (Berserk: 4 -> 8)', () => {
-		const berserkWindow = [{ placementId: 'b', abilityName: 'Berserk', startTick: 0, endTick: 10 }];
+		const berserkWindow = [
+			{ placementId: 'b', abilityName: 'Berserk', startTick: 0, endTick: 10, extensions: [] }
+		];
 		const result = resolveAspect(
 			[BERSERK_BLOODLUST_CAP_MODIFIER],
 			'bloodlust',
@@ -809,7 +1080,9 @@ describe('resolveAspect', () => {
 	});
 
 	it('a buffWindow modifier is inactive outside its own window', () => {
-		const berserkWindow = [{ placementId: 'b', abilityName: 'Berserk', startTick: 0, endTick: 10 }];
+		const berserkWindow = [
+			{ placementId: 'b', abilityName: 'Berserk', startTick: 0, endTick: 10, extensions: [] }
+		];
 		const result = resolveAspect(
 			[BERSERK_BLOODLUST_CAP_MODIFIER],
 			'bloodlust',
@@ -877,6 +1150,29 @@ describe('resolveAdrenaline', () => {
 		expect(states[5].value).toBe(14);
 	});
 
+	it("credits Imbue: Shadows' bonus once per landed hit tick, not as one lump sum at the placement's start tick (Rapid Fire: +5 per tick over its 8 hit ticks)", () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'imbue', abilityName: imbueShadows.name, startTick: 0 }, // -40, target: 'Self'
+			{ id: 'rf', abilityName: rapidFire.name, startTick: 5 } // -25, 8 hits at ticks 5-12
+		];
+		const states = resolveAdrenaline(placements, abilities, 'ranged', 100, 14);
+		expect(states[4].value).toBe(60); // 100 - 40, unchanged right up to Rapid Fire's cast
+		expect(states[5].value).toBe(40); // 60 - 25 (cost) + 5 (hit 1 of 8)
+		expect(states[6].value).toBe(45); // + another 5 (hit 2)
+		expect(states[7].value).toBe(50);
+		expect(states[12].value).toBe(75); // 40 + 5*7 (hits 2 through 8)
+	});
+
+	it("applies Imbue: Shadows' per-hit bonus to a spend-type Ultimate alongside Ring of Vigour's flat refund (Deadshot at 60% adrenaline: 60 -> 0 (cost) -> 10 (Ring of Vigour) -> 50 (8 hits * 5))", () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'imbue', abilityName: imbueShadows.name, startTick: 0 }, // -40, target: 'Self'
+			{ id: 'ds', abilityName: deadshot.name, startTick: 5 } // -60, single placement, 8 hits per hitCountFor
+		];
+		const states = resolveAdrenaline(placements, abilities, 'ranged', 100, 6, true);
+		expect(states[4].value).toBe(60); // 100 - 40
+		expect(states[5].value).toBe(50); // 60 - 60 (cost, clamped to 0) + 10 (RoV) + 5*8 (Imbue: Shadows)
+	});
+
 	it('does not refund adrenaline for an Ultimate when Ring of Vigour is off', () => {
 		const placements: TimelinePlacement[] = [{ id: 'a', abilityName: berserk.name, startTick: 0 }];
 		const states = resolveAdrenaline(placements, abilities, 'melee', 100, 5);
@@ -898,9 +1194,7 @@ describe('resolveAdrenaline', () => {
 	});
 
 	it('does not refund for non-Ultimate spends even when Ring of Vigour is active (Revenge is Threshold)', () => {
-		const placements: TimelinePlacement[] = [
-			{ id: 'a', abilityName: revenge.name, startTick: 0 }
-		];
+		const placements: TimelinePlacement[] = [{ id: 'a', abilityName: revenge.name, startTick: 0 }];
 		const states = resolveAdrenaline(placements, abilities, 'melee', 100, 5, true);
 		expect(states[0].value).toBe(85); // 100 - 15, no refund since Revenge is Threshold not Ultimate
 	});
@@ -1005,7 +1299,7 @@ describe('resolveAdrenaline', () => {
 		expect(states[0].value).toBe(40); // -60, no change from Fury of the Small
 	});
 
-	it('stacks additively with Meteor Strike\'s 1.5x melee Basic multiplier (Adaptive Strike: 13 * 1.5 = 19.5)', () => {
+	it("stacks additively with Meteor Strike's 1.5x melee Basic multiplier (Adaptive Strike: 13 * 1.5 = 19.5)", () => {
 		const placements: TimelinePlacement[] = [
 			{ id: 'meteor', abilityName: meteorStrike.name, startTick: 0 },
 			{ id: 'adaptive', abilityName: adaptiveStrike.name, startTick: 3 }
@@ -1016,7 +1310,6 @@ describe('resolveAdrenaline', () => {
 		const states = resolveAdrenaline(placements, abilities, 'melee', 60, 6, false, true);
 		expect(states[3].value).toBe(33);
 	});
-
 });
 
 describe('parsePerTickAdrenaline', () => {

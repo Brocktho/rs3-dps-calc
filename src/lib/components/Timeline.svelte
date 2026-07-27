@@ -2,15 +2,15 @@
 	import {
 		abilityTickSpan,
 		BLOODLUST_BASE_CAP,
+		buffBaseEndTick,
 		canPlaceAbility,
-		clearConflictingUses,
 		colorForAbility,
 		cooldownZonesFor,
 		cumulativeDamage,
 		damageByTick,
-		earliestAvailableTick,
 		findSwapTarget,
 		gcdPlacementAt,
+		groupBuffExtensions,
 		insertAbilityAtAnchor,
 		isOffGcdAbility,
 		nextOpenTick,
@@ -99,7 +99,10 @@
 	function placeAbility(ability: Ability) {
 		const tick = nextOpenTick(ability, placements, abilities, timelineLength);
 		if (tick === null) return;
-		placements = [...placements, { id: crypto.randomUUID(), abilityName: ability.name, startTick: tick }];
+		placements = [
+			...placements,
+			{ id: crypto.randomUUID(), abilityName: ability.name, startTick: tick }
+		];
 	}
 
 	function removePlacement(id: string) {
@@ -113,20 +116,37 @@
 		}, 150);
 	}
 
+	// Setting draggingAbility/draggingPlacementId triggers reactive DOM insertions elsewhere in this
+	// component (most notably cooldownZones, which mounts a NEW .cooldown-zone band the instant a
+	// placement with an existing same-name cooldown starts dragging). Doing that DOM mutation
+	// synchronously inside the dragstart handler itself is exactly the pattern that makes Chromium/
+	// Firefox silently abort an in-progress native drag (an immediate dragend, no visible ghost) --
+	// confirmed directly: a first-of-its-kind placement (nothing to show a cooldown zone against, so
+	// no DOM mutation happens) always dragged fine, while a second occurrence of the same ability
+	// (which DOES have a cooldown zone to render) never did, and pausing on a dragstart breakpoint
+	// (which delays the reactive update past the browser's drag-initialization window) let the drag
+	// succeed and the cooldown zone become visible. A microtask still runs before the browser
+	// repaints/yields, so it isn't late enough -- setTimeout(0) genuinely defers to a later task,
+	// after the browser has committed to the drag. dataTransfer calls must stay synchronous --
+	// browsers require setData/effectAllowed during the dragstart event itself.
 	function onPaletteDragStart(e: DragEvent, ability: Ability) {
 		e.dataTransfer?.setData('text/x-timeline-new-ability', ability.name);
 		if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy';
-		draggingAbility = ability;
-		draggingPlacementId = null;
-		draggingOriginTick = null;
+		setTimeout(() => {
+			draggingAbility = ability;
+			draggingPlacementId = null;
+			draggingOriginTick = null;
+		}, 0);
 	}
 
 	function onPlacementDragStart(e: DragEvent, placement: TimelinePlacement) {
 		e.dataTransfer?.setData('text/x-timeline-move-placement', placement.id);
 		if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
-		draggingAbility = abilityByName(placement.abilityName) ?? null;
-		draggingPlacementId = placement.id;
-		draggingOriginTick = placement.startTick;
+		setTimeout(() => {
+			draggingAbility = abilityByName(placement.abilityName) ?? null;
+			draggingPlacementId = placement.id;
+			draggingOriginTick = placement.startTick;
+		}, 0);
 	}
 
 	function onDragEnd() {
@@ -242,87 +262,46 @@
 			return;
 		}
 		// Same policy as a plain place/move: honor exactly where this was asked to go (right
-		// before/after the anchor), and clear out any other placement of this same ability that's
-		// now too close, rather than rejecting the insert over a cooldown conflict.
-		const finalPlacement = result.find((p) => p.id === placementId);
-		placements = finalPlacement
-			? clearConflictingUses(ability, finalPlacement.startTick, result, abilities, timelineLength, placementId)
-			: result;
+		// before/after the anchor) with no cooldown-driven relocation or clearing of any other
+		// placement -- a resulting cooldown violation is simply flagged (see
+		// cooldownViolationPlacementIds), not resolved by removing something else.
+		placements = result;
 		const required = requiredTimelineLength(placements, abilities);
 		if (required > timelineLength) timelineLength = required;
 	}
 
-	// Cooldown resolution happens ONLY here, at drop time -- never live during the drag (the ghost
-	// always tracks the cursor's exact raw position while hovering, so the ability can be dragged
-	// freely without fighting a live snap). On commit: a drop landing inside an EARLIER same-name
-	// placement's cooldown window pushes forward past it (that earlier placement is left alone --
-	// this only ever looks at placements at-or-before the resolved tick, so it can't eat into a
-	// LATER one's window). Once that's resolved, any LATER same-name placement that's now too
-	// close to the final tick is cleared instead -- moving a use closer to a future use of itself
-	// bumps that future use off the timeline, rather than blocking the move.
+	// Placement lands EXACTLY where dropped -- no cooldown-driven snapping or relocation, and no
+	// clearing of any other same-name placement. A drop is only ever rejected for a genuine
+	// GCD-collision with another placement (in which case an exact-single-conflict swap is offered
+	// instead); a cooldown violation against another use of the SAME ability is allowed through and
+	// simply flagged afterward (see cooldownViolationPlacementIds) with a warning icon, rather than
+	// blocking the move or silently relocating/deleting anything. This intentionally permits
+	// building an "invalid" rotation -- the timeline no longer refuses to represent one.
 	function handlePlaceDrop(e: DragEvent, tick: number) {
 		const movingId = e.dataTransfer?.getData('text/x-timeline-move-placement');
 		if (movingId) {
 			const placement = placements.find((p) => p.id === movingId);
 			const ability = placement ? abilityByName(placement.abilityName) : undefined;
 			if (!placement || !ability) return;
-			const resolvedTick = earliestAvailableTick(
-				ability,
-				tick,
-				placements,
-				abilities,
-				timelineLength,
-				movingId
-			);
-			if (canPlaceAbility(ability, resolvedTick, placements, abilities, timelineLength, movingId)) {
-				const moved = placements.map((p) =>
-					p.id === movingId ? { ...p, startTick: resolvedTick } : p
-				);
-				placements = clearConflictingUses(
-					ability,
-					resolvedTick,
-					moved,
-					abilities,
-					timelineLength,
-					movingId
-				);
+			if (canPlaceAbility(ability, tick, placements, abilities, timelineLength, movingId)) {
+				placements = placements.map((p) => (p.id === movingId ? { ...p, startTick: tick } : p));
 				return;
 			}
-			const swapTarget = findSwapTarget(movingId, resolvedTick, placements, abilities, timelineLength);
+			const swapTarget = findSwapTarget(movingId, tick, placements, abilities, timelineLength);
 			if (swapTarget) {
-				const swapTargetAbility = abilityByName(swapTarget.abilityName);
 				// A swap exchanges each ability's own ORIGINAL start tick, not the resolved drop
 				// tick -- see findSwapTarget's doc comment for why using the raw drop tick here
 				// could leave the two new positions overlapping each other.
 				const movingOriginalTick = placement.startTick;
 				const targetOriginalTick = swapTarget.startTick;
-				let swapped = placements.map((p) => {
+				placements = placements.map((p) => {
 					if (p.id === movingId) return { ...p, startTick: targetOriginalTick };
 					if (p.id === swapTarget.id) return { ...p, startTick: movingOriginalTick };
 					return p;
 				});
-				swapped = clearConflictingUses(
-					ability,
-					targetOriginalTick,
-					swapped,
-					abilities,
-					timelineLength,
-					movingId
-				);
-				if (swapTargetAbility) {
-					swapped = clearConflictingUses(
-						swapTargetAbility,
-						movingOriginalTick,
-						swapped,
-						abilities,
-						timelineLength,
-						swapTarget.id
-					);
-				}
-				placements = swapped;
 				return;
 			}
-			flashInvalid(resolvedTick);
+			flashInvalid(tick);
 			return;
 		}
 
@@ -330,14 +309,14 @@
 		if (!newAbilityName) return;
 		const ability = abilityByName(newAbilityName);
 		if (!ability) return;
-		const resolvedTick = earliestAvailableTick(ability, tick, placements, abilities, timelineLength);
-		if (!canPlaceAbility(ability, resolvedTick, placements, abilities, timelineLength)) {
-			flashInvalid(resolvedTick);
+		if (!canPlaceAbility(ability, tick, placements, abilities, timelineLength)) {
+			flashInvalid(tick);
 			return;
 		}
-		const newId = crypto.randomUUID();
-		const added = [...placements, { id: newId, abilityName: ability.name, startTick: resolvedTick }];
-		placements = clearConflictingUses(ability, resolvedTick, added, abilities, timelineLength, newId);
+		placements = [
+			...placements,
+			{ id: crypto.randomUUID(), abilityName: ability.name, startTick: tick }
+		];
 	}
 
 	// GCD row: one cell per tick, either an open drop-target or (at a GCD placement's start
@@ -396,9 +375,7 @@
 	// Buff lane: each self-buff placement packed into the minimum number of stacked rows needed
 	// (a compact Gantt -- only buffs whose active windows actually overlap get separate rows).
 	const packedBuffs = $derived(packIntoLanes(resolveBuffs(placements, abilities, timelineLength)));
-	const buffLaneCount = $derived(
-		packedBuffs.reduce((max, b) => Math.max(max, b.lane + 1), 0)
-	);
+	const buffLaneCount = $derived(packedBuffs.reduce((max, b) => Math.max(max, b.lane + 1), 0));
 	const buffLanes = $derived(
 		Array.from({ length: buffLaneCount }, (_, lane) => packedBuffs.filter((b) => b.lane === lane))
 	);
@@ -437,7 +414,9 @@
 		)
 	);
 	const currentAdrenaline = $derived(
-		adrenalineStates.length > 0 ? adrenalineStates[adrenalineStates.length - 1].value : startingAdrenaline
+		adrenalineStates.length > 0
+			? adrenalineStates[adrenalineStates.length - 1].value
+			: startingAdrenaline
 	);
 	// Bloodlust is melee-only -- resolveBloodlust already no-ops non-melee placements, but the lane
 	// itself is only worth showing at all when melee is the active combat style.
@@ -463,7 +442,9 @@
 			draggingPlacementId ?? undefined
 		);
 	});
-	const cooldownZonesAreOffGcd = $derived(draggingAbility ? isOffGcdAbility(draggingAbility) : false);
+	const cooldownZonesAreOffGcd = $derived(
+		draggingAbility ? isOffGcdAbility(draggingAbility) : false
+	);
 
 	// Ghost preview: while dragging (palette or an existing placement), highlight where it would
 	// land at the currently-hovered tick, colored by whether the drop would succeed -- either as
@@ -517,6 +498,24 @@
 		for (const p of placements) {
 			if (p.startTick < 0 || p.startTick >= timelineLength) continue;
 			if (adrenalineStates[p.startTick]?.insufficientForCost) ids.add(p.id);
+		}
+		return ids;
+	});
+
+	// Purely informational, like insufficientAdrenalinePlacementIds above -- flags a placement that
+	// violates its own ability's cooldown against another use of the same ability, WITHOUT ever
+	// blocking or relocating the placement itself. Dragging/moving/inserting an ability now always
+	// lands exactly where it's dropped (see handlePlaceDrop/handleInsertDrop); an invalid-cooldown
+	// rotation is something the user can deliberately build, just flagged with a warning icon rather
+	// than silently snapped, blocked, or resolved by clearing a different placement.
+	const cooldownViolationPlacementIds = $derived.by(() => {
+		const ids = new Set<string>();
+		for (const p of placements) {
+			const ability = abilityByName(p.abilityName);
+			if (!ability) continue;
+			if (!respectsCooldown(ability, p.startTick, placements, abilities, timelineLength, p.id)) {
+				ids.add(p.id);
+			}
 		}
 		return ids;
 	});
@@ -589,7 +588,9 @@
 	<div class="timeline-toolbar">
 		<button type="button" onclick={extendTimeline}>+50 ticks (+30s)</button>
 		<button type="button" onclick={clearTimeline}>Clear</button>
-		<span class="timeline-length">{timelineLength} ticks ({(timelineLength * TICK_SECONDS).toFixed(1)}s)</span>
+		<span class="timeline-length"
+			>{timelineLength} ticks ({(timelineLength * TICK_SECONDS).toFixed(1)}s)</span
+		>
 	</div>
 
 	<div class="timeline-scroll">
@@ -648,13 +649,30 @@
 			{#each buffLanes as lane, laneIndex (laneIndex)}
 				<div class="timeline-row buff-row" style:grid-column="1 / -1">
 					{#each lane as buff (buff.placementId)}
+						{@const barSpan = buff.endTick - buff.startTick}
+						{@const extensionGroups = groupBuffExtensions(buff.extensions, buffBaseEndTick(buff))}
 						<div
 							class="lane-box buff-box"
-							style:grid-column="{buff.startTick + 1} / span {buff.endTick - buff.startTick}"
+							style:grid-column="{buff.startTick + 1} / span {barSpan}"
 							style:background-color={colorForAbility(buff.abilityName)}
 							title="{buff.abilityName} (ticks {buff.startTick}-{buff.endTick - 1})"
 						>
 							{buff.abilityName}
+							{#each extensionGroups as group (group.startTick)}
+								<span
+									class="buff-extension-region"
+									style:left="{((group.startTick - buff.startTick) / barSpan) * 100}%"
+									style:width="{((group.endTick - group.startTick) / barSpan) * 100}%"
+									title="{group.sourceAbilityName} extended {buff.abilityName} by
+										{group.totalExtendTicks} {group.totalExtendTicks === 1 ? 'tick' : 'ticks'}
+										{group.eventCount > 1 ? `(${group.eventCount} hits)` : ''} -- now ticks
+										{group.startTick}-{group.endTick - 1}"
+								>
+									{#if group.eventCount > 1}
+										<span class="buff-extension-label">+{group.totalExtendTicks}</span>
+									{/if}
+								</span>
+							{/each}
 						</div>
 					{/each}
 				</div>
@@ -707,7 +725,11 @@
 							>
 								<img src={ability.iconPath} alt={ability.name} width="24" height="24" />
 								{#if insertAnchorId === cell.placement!.id}
-									<span class="insert-indicator" class:right={insertSide === 'after'} aria-hidden="true">
+									<span
+										class="insert-indicator"
+										class:right={insertSide === 'after'}
+										aria-hidden="true"
+									>
 										{insertSide === 'after' ? '▸' : '◂'}
 									</span>
 								{/if}
@@ -716,6 +738,13 @@
 										class="adrenaline-warning"
 										title="Not enough adrenaline banked at this point"
 										aria-hidden="true">!</span
+									>
+								{/if}
+								{#if cooldownViolationPlacementIds.has(cell.placement!.id)}
+									<span
+										class="cooldown-warning"
+										title="This is not a valid placement for this ability due to cooldown"
+										aria-hidden="true">▲</span
 									>
 								{/if}
 							</button>
@@ -771,6 +800,13 @@
 											aria-hidden="true">!</span
 										>
 									{/if}
+									{#if cooldownViolationPlacementIds.has(placement.id)}
+										<span
+											class="cooldown-warning off-gcd-warning"
+											title="This is not a valid placement for this ability due to cooldown"
+											aria-hidden="true">▲</span
+										>
+									{/if}
 								</button>
 							{/if}
 						{/each}
@@ -800,7 +836,7 @@
 		</div>
 	</div>
 
-	<TimelineChart damageByTick={tickDamage} cumulative={cumulative} avgDps={avgDps} />
+	<TimelineChart damageByTick={tickDamage} {cumulative} {avgDps} />
 </div>
 
 <style>
@@ -1045,6 +1081,32 @@
 		background: #f4d78c;
 	}
 
+	/* Highlights the tick range a buff's duration was extended over, so the bar visibly shows
+	   WHY it's wider rather than just appearing to grow -- a translucent overlay plus a
+	   hoverable tooltip naming the source ability (e.g. "Rapid Fire extended Galeshot by 8
+	   ticks (8 hits)"). Consecutive same-source extension events (per groupBuffExtensions,
+	   e.g. all 8 of Rapid Fire's individual +1-tick hits) are combined into ONE region rather
+	   than one marker per event, since visually they're a single continuous "this ability is
+	   extending the buff" occurrence, not 8 unrelated ones. */
+	.buff-extension-region {
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		background: rgba(255, 255, 255, 0.35);
+		border-left: 1px solid rgba(20, 16, 12, 0.5);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		cursor: help;
+	}
+
+	.buff-extension-label {
+		font-size: 0.6rem;
+		font-weight: 700;
+		color: #14100c;
+		text-shadow: 0 0 2px rgba(255, 255, 255, 0.6);
+	}
+
 	.off-gcd-row {
 		height: 1.6rem;
 	}
@@ -1190,6 +1252,33 @@
 		font-size: 0.55rem;
 		top: -0.25rem;
 		right: -0.25rem;
+	}
+
+	/* Purely informational warning badge -- doesn't block/relocate placement (see
+	   cooldownViolationPlacementIds). Positioned on the opposite corner from .adrenaline-warning so
+	   both can show at once without overlapping. */
+	.cooldown-warning {
+		position: absolute;
+		top: -0.35rem;
+		left: -0.35rem;
+		width: 1rem;
+		height: 1rem;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: #e8b339;
+		font-size: 0.75rem;
+		line-height: 1;
+		text-shadow: 0 0 2px rgba(20, 16, 12, 0.9);
+		pointer-events: none;
+	}
+
+	.cooldown-warning.off-gcd-warning {
+		width: 0.75rem;
+		height: 0.75rem;
+		font-size: 0.6rem;
+		top: -0.25rem;
+		left: -0.25rem;
 	}
 
 	.placed-icon:hover {

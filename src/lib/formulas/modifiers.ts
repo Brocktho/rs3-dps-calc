@@ -54,6 +54,16 @@ interface ResourceModifierCommon {
 	requiresContext?: (ctx: ModifierContext) => boolean;
 	/** perTickIncome only; defaults to 1. */
 	intervalTicks?: number;
+	/**
+	 * `generateBonus` only; defaults to 'perPlacement'. 'perPlacement' resolves once for the whole
+	 * placement, alongside its own base generation (Fury of the Small: +1 flat per generating cast,
+	 * regardless of how many hits that cast lands). 'perHit' instead resolves once for each of the
+	 * placement's own landed-hit ticks (Imbue: Shadows: +5% per hit, so a multi-hit ability like
+	 * Rapid Fire or Deadshot accumulates one copy per hit) -- and, unlike perPlacement, fires even
+	 * when the placement's own generateForPlacement amount is a cost rather than a generation, since
+	 * a spend-type Ultimate can still land hits eligible for a per-hit bonus.
+	 */
+	applicationGranularity?: 'perPlacement' | 'perHit';
 }
 
 /** Always active given the player's current static state -- gear, unlocks, config toggles. */

@@ -28,6 +28,14 @@ export interface ResourceDefinition {
 	consumeForPlacement?: (ability: Ability) => number;
 	/** Restricts which placements interact with this resource at all, e.g. Bloodlust: melee only. */
 	isEligiblePlacement?: (ability: Ability) => boolean;
+	/** Every tick `placement` lands a hit on -- a channel's surviving hitTicks, or hitCountFor(ability)
+	 *  copies of its own startTick for a simultaneous multi-hit ability, or just [startTick] for a
+	 *  plain single-hit ability. Drives per-hit resource modifiers like Imbue: Shadows: each entry
+	 *  gets its own independent generateBonus/generateMultiplier resolution, regardless of whether
+	 *  the placement's own generateForPlacement amount is positive or negative (a spend like Deadshot
+	 *  still lands hits that are each eligible for a per-hit bonus). Optional only so resources with
+	 *  no such concept (Bloodlust) don't need to supply a trivial passthrough. */
+	hitTicksForPlacement?: (placement: TimelinePlacement, ability: Ability) => number[];
 }
 
 function clamp(value: number, cap: number): number {
@@ -38,8 +46,10 @@ function clamp(value: number, cap: number): number {
  * Simulates `definition`'s gauge across the whole timeline, tick by tick: on every tick, resolves
  * the active cap (`resolveAspect(..., 'cap', ...)`, e.g. Berserk raising Bloodlust's ceiling); then,
  * for each eligible placement landing on that tick, applies its consume amount (if enough is
- * banked), then its signed generate amount adjusted by `generateBonus`/`generateMultiplier` (if
- * generating) or followed by `costRefund` (if spending, e.g. Ring of Vigour); and only *after* that
+ * banked), then its signed generate amount adjusted by `generateMultiplier` (if generating) or
+ * followed by `costRefund` (if spending, e.g. Ring of Vigour), then applies `generateBonus` once per
+ * entry in `hitTicksForPlacement` regardless of that sign (a per-hit bonus like Imbue: Shadows fires
+ * for every landed hit even on a spend-type Ultimate like Deadshot); and only *after* all of that
  * applies any ambient `perTickIncome` for the tick (e.g. Meteor Strike's 4.5%/tick) -- all clamped
  * to the resolved cap.
  *
@@ -68,6 +78,37 @@ export function resolveResource(
 		.filter((p) => p.startTick >= 0 && p.startTick < timelineLength)
 		.sort((a, b) => a.startTick - b.startTick);
 
+	// generateBonus modifiers are split by applicationGranularity up front: perPlacement bonuses
+	// (the default, e.g. Fury of the Small) resolve once per cast; perHit bonuses (e.g. Imbue:
+	// Shadows) resolve once per landed hit tick. See ResourceModifierCommon.applicationGranularity.
+	const perPlacementModifiers = modifiers.filter(
+		(m) =>
+			m.resourceAspect !== 'generateBonus' ||
+			(m.applicationGranularity ?? 'perPlacement') === 'perPlacement'
+	);
+	const perHitModifiers = modifiers.filter(
+		(m) => m.resourceAspect === 'generateBonus' && m.applicationGranularity === 'perHit'
+	);
+
+	// Per-hit bonus events are scheduled onto the tick they actually land on (a channel's hit ticks
+	// can run well past its placement's own startTick, e.g. Rapid Fire's 8 hits over 8 ticks) --
+	// bucketed up front so the main loop below can apply each hit's bonus exactly when it happens,
+	// the same way `perTickIncome` fires on its own tick rather than at the triggering placement's.
+	const perHitBonusesByTick = new Map<number, Ability[]>();
+	if (definition.hitTicksForPlacement) {
+		for (const placement of placements) {
+			const ability = abilities.find((a) => a.name === placement.abilityName);
+			if (!ability) continue;
+			if (definition.isEligiblePlacement && !definition.isEligiblePlacement(ability)) continue;
+			for (const hitTick of definition.hitTicksForPlacement(placement, ability)) {
+				if (hitTick < 0 || hitTick >= timelineLength) continue;
+				const list = perHitBonusesByTick.get(hitTick);
+				if (list) list.push(ability);
+				else perHitBonusesByTick.set(hitTick, [ability]);
+			}
+		}
+	}
+
 	let value = clamp(definition.startingValue, definition.baseCap);
 	let sortedIndex = 0;
 
@@ -95,10 +136,26 @@ export function resolveResource(
 			if (base < 0) {
 				insufficientForCost = value < Math.abs(base);
 				value = clamp(value + base, cap);
-				const refund = resolveAspect(modifiers, definition.id, 'costRefund', tick, buffs, ctx, ability);
+				const refund = resolveAspect(
+					modifiers,
+					definition.id,
+					'costRefund',
+					tick,
+					buffs,
+					ctx,
+					ability
+				);
 				if (refund.additive !== 0) value = clamp(value + refund.additive, cap);
 			} else if (base > 0) {
-				const bonus = resolveAspect(modifiers, definition.id, 'generateBonus', tick, buffs, ctx, ability);
+				const bonus = resolveAspect(
+					perPlacementModifiers,
+					definition.id,
+					'generateBonus',
+					tick,
+					buffs,
+					ctx,
+					ability
+				);
 				const multiplier = resolveAspect(
 					modifiers,
 					definition.id,
@@ -112,9 +169,36 @@ export function resolveResource(
 			}
 		}
 
+		// Per-hit bonuses (e.g. Imbue: Shadows' 5% per landed hit) apply on the tick each hit
+		// actually lands -- which for a channel can be well after its placement's own startTick
+		// (Rapid Fire's 8 hits spread over 8 ticks) -- independent of whether the placement's own
+		// generateForPlacement amount was a cost or a generation, since a spend-type Ultimate like
+		// Deadshot still lands hits that are each eligible for this bonus. Kept separate from the
+		// perPlacement generateBonus resolved above so a flat per-cast bonus like Fury of the Small
+		// doesn't get multiplied by a multi-hit ability's hit count.
+		for (const ability of perHitBonusesByTick.get(tick) ?? []) {
+			const bonus = resolveAspect(
+				perHitModifiers,
+				definition.id,
+				'generateBonus',
+				tick,
+				buffs,
+				ctx,
+				ability
+			);
+			if (bonus.additive !== 0) value = clamp(value + bonus.additive, cap);
+		}
+
 		// Ambient per-tick income (e.g. Meteor Strike) applies last -- after any placement landing
 		// this same tick has already spent/generated -- see the doc comment above for why.
-		const perTickIncome = resolveAspect(modifiers, definition.id, 'perTickIncome', tick, buffs, ctx);
+		const perTickIncome = resolveAspect(
+			modifiers,
+			definition.id,
+			'perTickIncome',
+			tick,
+			buffs,
+			ctx
+		);
 		if (perTickIncome.additive !== 0) value = clamp(value + perTickIncome.additive, cap);
 
 		result[tick] = { value, cap, insufficientForCost };

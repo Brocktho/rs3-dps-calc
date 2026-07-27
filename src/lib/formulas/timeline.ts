@@ -79,9 +79,7 @@ export function resolveDamagePercent(ability: Ability, gear: GearContext): strin
 		} else if (k.startsWith('igneous kal-') || k.includes('igneous kal-')) {
 			if (
 				gear.equippedCapeName &&
-				k
-					.split(/\s+or\s+/)
-					.some((name) => name.trim() === gear.equippedCapeName!.toLowerCase())
+				k.split(/\s+or\s+/).some((name) => name.trim() === gear.equippedCapeName!.toLowerCase())
 			) {
 				return value;
 			}
@@ -104,7 +102,10 @@ export function abilityDamageForPlacement(
 	return multiplier === null ? 0 : Math.floor(adTotal * multiplier);
 }
 
-export function placementAbility(placement: TimelinePlacement, abilities: Ability[]): Ability | null {
+export function placementAbility(
+	placement: TimelinePlacement,
+	abilities: Ability[]
+): Ability | null {
 	return abilities.find((a) => a.name === placement.abilityName) ?? null;
 }
 
@@ -124,7 +125,8 @@ export function placementAbility(placement: TimelinePlacement, abilities: Abilit
  * since their total damage needs to be divided across the ticks it's spread over (and reduced
  * proportionally if the channel gets interrupted -- see resolveChannels).
  */
-export type HitProfile = { kind: 'single' } | { kind: 'channel'; hits: number; intervalTicks: number };
+export type HitProfile =
+	{ kind: 'single' } | { kind: 'channel'; hits: number; intervalTicks: number };
 
 /**
  * Parses the ability's channel/DoT hit timing from its description text. Two phrasings appear in
@@ -248,15 +250,146 @@ export function resolveChannels(
 	return result;
 }
 
+/** A single duration-extension event actually applied to a ResolvedBuff, in the order it
+ *  happened -- lets the UI show not just the final (possibly-extended) bar width, but exactly
+ *  when and by what each extension occurred, e.g. a marker at each Rapid Fire hit tick labeled
+ *  "Rapid Fire +1 tick" rather than the bar simply appearing wider with no visible cause. */
+export interface AppliedBuffExtension {
+	tick: number;
+	extendTicks: number;
+	sourceAbilityName: string;
+}
+
 export interface ResolvedBuff {
 	placementId: string;
 	abilityName: string;
 	startTick: number;
 	endTick: number;
+	/** Chronological log of every extension applied to this buff instance, e.g. 8 entries for
+	 *  a full Rapid Fire channel each extending Galeshot's Searing Winds by 1 tick. Empty for a
+	 *  buff that was never extended. */
+	extensions: AppliedBuffExtension[];
 }
 
-/** Resolves every self-buff placement's active window. Buffs expire on their own fixed timer --
- *  no interruption logic (unlike channels, casting another ability doesn't cancel a buff). */
+export interface BuffExtension {
+	/** The buff's own in-game display name as written in ability descriptions, e.g. "Searing
+	 *  Winds" or "Shadow imbued" -- distinct from the casting ability's name (see
+	 *  BUFF_DISPLAY_NAME_TO_ABILITY_NAME) since the two only sometimes coincide (Berserk does,
+	 *  Galeshot's "Searing Winds" and Imbue: Shadows' "Shadow imbued" don't). */
+	buffDisplayName: string;
+	extendTicks: number;
+}
+
+/** A run of one or more consecutive same-source extension events collapsed into a single
+ *  visual segment -- e.g. Rapid Fire's 8 individual +1-tick hits become one
+ *  `{ eventCount: 8, totalExtendTicks: 8 }` segment spanning the whole extended range, rather
+ *  than 8 separate notches for what is, visually, one continuous "Rapid Fire is extending this
+ *  buff" event. A single non-repeated extension (Shadow Tendrils' one-off +6) is still a
+ *  "group" of size 1 -- the grouping is about presentation, not a different code path. */
+export interface BuffExtensionGroup {
+	sourceAbilityName: string;
+	/**
+	 * The tick range covering ONLY the time this group actually added to the buff -- from the
+	 * buff's own end tick immediately before this group's first event applied, to its end tick
+	 * immediately after the group's last event applied. E.g. Shadow Tendrils cast at tick 5
+	 * against a buff that would otherwise end at tick 50 highlights ticks 50-56 (the added
+	 * tail), NOT ticks 5-56 (the whole remaining buff) -- confirmed directly by the user, who
+	 * wants the highlight to show exactly the extra time gained, not everything from the cast
+	 * onward. Likewise Rapid Fire's 8 hits highlight only the ticks appended by those hits.
+	 */
+	startTick: number;
+	endTick: number;
+	totalExtendTicks: number;
+	eventCount: number;
+}
+
+/** A buff's own endTick with every applied extension backed out -- i.e. what its endTick would
+ *  have been from just its base duration, before anything extended it. Used to seed
+ *  groupBuffExtensions' gap detection for the very first group. */
+export function buffBaseEndTick(buff: ResolvedBuff): number {
+	return buff.endTick - buff.extensions.reduce((sum, e) => sum + e.extendTicks, 0);
+}
+
+/**
+ * Collapses a buff's chronological extension log into visual groups: consecutive events from
+ * the SAME source ability, where each next event's tick falls within the range the buff was
+ * already extended to by that same run (i.e. no gap -- the extensions are back-to-back, not two
+ * separate bursts from the same ability with a pause between them), are merged into one group. A
+ * gap or a change in source ability starts a new group. `buffBaseEndTick` is the buff's own
+ * endTick with NO extensions applied (startTick + its base duration, pre-clamping), used only to
+ * detect whether the very first event was itself "immediate" (landed before the buff would have
+ * otherwise ended) -- it does not otherwise participate once the first group exists.
+ */
+export function groupBuffExtensions(
+	extensions: AppliedBuffExtension[],
+	buffBaseEndTick: number
+): BuffExtensionGroup[] {
+	const groups: BuffExtensionGroup[] = [];
+
+	for (const event of extensions) {
+		const current = groups[groups.length - 1];
+		const priorEnd = current ? current.endTick : buffBaseEndTick;
+		const isContinuation = current?.sourceAbilityName === event.sourceAbilityName;
+
+		if (isContinuation) {
+			current.endTick = priorEnd + event.extendTicks;
+			current.totalExtendTicks += event.extendTicks;
+			current.eventCount += 1;
+		} else {
+			groups.push({
+				sourceAbilityName: event.sourceAbilityName,
+				startTick: priorEnd,
+				endTick: priorEnd + event.extendTicks,
+				totalExtendTicks: event.extendTicks,
+				eventCount: 1
+			});
+		}
+	}
+
+	return groups;
+}
+
+/**
+ * Maps a buff's in-game display name (as it appears in OTHER abilities' "Extends the duration
+ * of X" text) to the name of the ability that actually casts/owns that buff -- i.e. the name
+ * `ResolvedBuff.abilityName` uses. Only needed where the two differ; add an entry here whenever
+ * a newly-modeled extension effect names a buff whose casting ability isn't obvious from the
+ * string alone.
+ */
+const BUFF_DISPLAY_NAME_TO_ABILITY_NAME: Record<string, string> = {
+	'searing winds': 'Galeshot',
+	'shadow imbued': 'Imbue: Shadows'
+};
+
+function buffCastingAbilityName(buffDisplayName: string): string {
+	return BUFF_DISPLAY_NAME_TO_ABILITY_NAME[buffDisplayName.toLowerCase()] ?? buffDisplayName;
+}
+
+/**
+ * Parses a "Extends the duration of <Buff> by X.Xs (Y ticks)" clause from an ability's
+ * description -- covers both a single-cast extension (Shadow Tendrils -> Imbue: Shadows, +6
+ * ticks on its own placement tick) and a per-hit extension on a channelled ability (Rapid Fire
+ * -> Galeshot's Searing Winds, Greater Flurry -> Berserk: each of the ability's own hits, per
+ * parseHitProfile, extends the target buff by this amount independently -- confirmed directly
+ * by the user for Rapid Fire/Galeshot, and the identical phrasing on Greater Flurry/Berserk).
+ */
+export function parseBuffExtension(ability: Ability): BuffExtension | null {
+	const match = ability.description.match(
+		/extends the duration of ([a-z ]+?) by [\d.]+s \((\d+) ticks?\)/i
+	);
+	if (!match) return null;
+	return { buffDisplayName: match[1].trim(), extendTicks: Number(match[2]) };
+}
+
+/**
+ * Resolves every self-buff placement's active window, then applies any buff-duration extensions
+ * from OTHER placements on top. Extensions are chronological: an extending placement/hit can
+ * only push out a buff's endTick if the buff is still active (or already started) at that tick,
+ * and only extends the SOONEST-ending currently-tracked instance of that buff -- an extension
+ * can't resurrect an already-expired buff or retroactively affect one that hasn't started yet.
+ * Channelled extenders (Rapid Fire, Greater Flurry) apply once per landed hit tick (per
+ * resolveChannels), not once per cast, since each individual attack extends independently.
+ */
 export function resolveBuffs(
 	placements: TimelinePlacement[],
 	abilities: Ability[],
@@ -272,9 +405,66 @@ export function resolveBuffs(
 			placementId: placement.id,
 			abilityName: placement.abilityName,
 			startTick: placement.startTick,
-			endTick: Math.min(placement.startTick + buff.durationTicks, timelineLength)
+			endTick: Math.min(placement.startTick + buff.durationTicks, timelineLength),
+			extensions: []
 		});
 	}
+
+	// Collect every extension EVENT (a tick at which some ability's hit/cast extends a named
+	// buff), then apply them to `result` in chronological order so a buff already extended by
+	// an earlier event correctly reflects that when a later event checks whether it's active.
+	const events: {
+		tick: number;
+		targetAbilityName: string;
+		extendTicks: number;
+		sourceAbilityName: string;
+	}[] = [];
+	const channels = resolveChannels(placements, abilities, timelineLength);
+	for (const placement of placements) {
+		const ability = placementAbility(placement, abilities);
+		if (!ability) continue;
+		const extension = parseBuffExtension(ability);
+		if (!extension) continue;
+		const targetAbilityName = buffCastingAbilityName(extension.buffDisplayName);
+
+		const channel = channels.find((c) => c.placementId === placement.id);
+		if (channel) {
+			for (const hitTick of channel.hitTicks) {
+				events.push({
+					tick: hitTick,
+					targetAbilityName,
+					extendTicks: extension.extendTicks,
+					sourceAbilityName: ability.name
+				});
+			}
+		} else {
+			events.push({
+				tick: placement.startTick,
+				targetAbilityName,
+				extendTicks: extension.extendTicks,
+				sourceAbilityName: ability.name
+			});
+		}
+	}
+	events.sort((a, b) => a.tick - b.tick);
+
+	for (const event of events) {
+		// The soonest-ending instance of the target buff that's already active (or starts no
+		// later than this tick) by this point -- matches how a single buff instance, not every
+		// past cast of that ability, is what's actually running in-game.
+		const candidates = result
+			.filter((b) => b.abilityName === event.targetAbilityName && b.startTick <= event.tick)
+			.sort((a, b) => a.endTick - b.endTick);
+		const active = candidates.find((b) => event.tick < b.endTick);
+		if (!active) continue; // buff already expired (or never cast) -- extension has no effect
+		active.endTick = Math.min(active.endTick + event.extendTicks, timelineLength);
+		active.extensions.push({
+			tick: event.tick,
+			extendTicks: event.extendTicks,
+			sourceAbilityName: event.sourceAbilityName
+		});
+	}
+
 	return result;
 }
 
@@ -303,7 +493,12 @@ export function packIntoLanes<T extends { startTick: number; endTick: number }>(
 	return result;
 }
 
-export function rangesOverlap(aStart: number, aSpan: number, bStart: number, bSpan: number): boolean {
+export function rangesOverlap(
+	aStart: number,
+	aSpan: number,
+	bStart: number,
+	bSpan: number
+): boolean {
 	return aStart < bStart + bSpan && bStart < aStart + aSpan;
 }
 
@@ -647,8 +842,24 @@ export function cooldownZonesFor(
 		.filter((z) => z.endTick > z.startTick);
 }
 
-/** First tick (0-indexed) where `ability` can legally be placed, for click-to-place. Returns
- *  null if the timeline has no room left for it. */
+/** Exclusive end tick of a channelled ability's full natural hit duration (its LAST hit tick + 1),
+ *  regardless of its GCD block's own (always-3-tick) span -- e.g. Rapid Fire occupies its 3-tick
+ *  GCD block like any other ability, but its 8 hits over 8 ticks means its natural channel window
+ *  actually reaches further than that block alone. Null for a non-channelled ability. Same formula
+ *  `requiredTimelineLength` already uses for a channel's reach. */
+function channelNaturalEndTick(ability: Ability, startTick: number): number | null {
+	const profile = parseHitProfile(ability);
+	if (profile.kind !== 'channel') return null;
+	return startTick + (profile.hits - 1) * profile.intervalTicks + 1;
+}
+
+/** First tick (0-indexed) where `ability` can legally be placed, for click-to-place. Skips past
+ *  any existing channelled placement's FULL natural duration (not just its 3-tick GCD block) --
+ *  click-to-place assumes the user wants any currently-running channel to finish uninterrupted,
+ *  rather than landing partway through it and truncating it per resolveChannels' interruption
+ *  behavior (dragging a placement to an exact tick can still deliberately interrupt a channel;
+ *  this only affects the auto-picked slot for a plain palette click). Returns null if the timeline
+ *  has no room left for it. */
 export function nextOpenTick(
 	ability: Ability,
 	placements: TimelinePlacement[],
@@ -656,7 +867,15 @@ export function nextOpenTick(
 	timelineLength: number
 ): number | null {
 	const span = abilityTickSpan(ability);
+	const channelEndTicks = placements
+		.map((p) => {
+			const placed = placementAbility(p, abilities);
+			return placed ? channelNaturalEndTick(placed, p.startTick) : null;
+		})
+		.filter((t): t is number => t !== null);
+
 	for (let tick = 0; tick + span <= timelineLength; tick++) {
+		if (channelEndTicks.some((endTick) => tick < endTick)) continue;
 		if (
 			canPlaceAbility(ability, tick, placements, abilities, timelineLength) &&
 			respectsCooldown(ability, tick, placements, abilities, timelineLength)
@@ -752,6 +971,28 @@ export function hitCountFor(ability: Ability): number {
 
 export const IMBUE_SHADOWS_ADRENALINE_PER_HIT = 5;
 
+/** Every landed-hit tick of `ability`, for resource modifiers (like Imbue: Shadows) that need to
+ *  apply once per hit rather than once per placement -- a channelled ability's surviving hit ticks
+ *  (per resolveChannels, so an interrupted channel only credits the hits that actually landed), or
+ *  else just its own start tick, scaled to hitCountFor(ability) copies for a simultaneous
+ *  multi-hit ability (Ricochet's 3, Adaptive Strike's 2, Deadshot's bare "8 hits.") since those
+ *  don't have distinct timing to spread across. */
+export function hitTicksForPlacement(
+	placement: TimelinePlacement,
+	ability: Ability,
+	placements: TimelinePlacement[],
+	abilities: Ability[],
+	timelineLength: number
+): number[] {
+	const profile = parseHitProfile(ability);
+	if (profile.kind === 'channel') {
+		const channels = resolveChannels(placements, abilities, timelineLength);
+		const channel = channels.find((c) => c.placementId === placement.id);
+		return channel?.hitTicks ?? [];
+	}
+	return Array(hitCountFor(ability)).fill(placement.startTick);
+}
+
 export interface AdrenalineState {
 	value: number;
 	/** True at a spend-placement's tick if the banked adrenaline just before it was less than the
@@ -805,7 +1046,20 @@ export const RING_OF_VIGOUR_MODIFIER: PassiveModifier = {
 /**
  * Imbue: Shadows' "Ranged attacks against your target generate 5% Adrenaline with each hit" bonus
  * -- a buff-window modifier active only while its own buff window (per resolveBuffs) covers the
- * current tick, and only for Ranged generating abilities (Ranged Basics).
+ * current tick. Applies to every Ranged attack that hits the target -- Basics, Enhanced, and
+ * Ultimates alike (e.g. Rapid Fire, Deadshot, Shadow Tendrils all qualify) -- NOT just abilities
+ * whose own `adrenaline` field happens to be positive (that field reflects the ability's own
+ * generate/cost mechanic, which is unrelated to whether it lands a ranged hit; Rapid Fire costs
+ * 25% but still lands 8 hits, and Deadshot costs 60% but still lands 8 hits, each independently
+ * eligible for this bonus regardless of the ability's own cost/generate sign). `target !== 'Self'`
+ * (and `!== 'Varies'`) is this project's existing "does this ability actually hit something"
+ * classification, per data/abilities.ts -- confirmed directly against the wiki's own wording,
+ * which has no restriction to generating/Basic abilities at all.
+ *
+ * The effect value is the bonus for ONE landed hit (not pre-scaled by hitCountFor) -- resolveResource
+ * applies generateBonus/generateMultiplier once per entry in hitTicksForPlacement, so a multi-hit
+ * ability naturally accumulates hitCountFor(ability) copies of this bonus, one per hit tick, instead
+ * of one lump sum at the placement's start tick.
  */
 export const IMBUE_SHADOWS_ADRENALINE_MODIFIER: BuffWindowModifier = {
 	kind: 'buffWindow',
@@ -813,10 +1067,11 @@ export const IMBUE_SHADOWS_ADRENALINE_MODIFIER: BuffWindowModifier = {
 	resourceId: 'adrenaline',
 	resourceAspect: 'generateBonus',
 	buffAbilityName: 'Imbue: Shadows',
-	effect: { operation: 'add', value: (ability) => IMBUE_SHADOWS_ADRENALINE_PER_HIT * hitCountFor(ability) },
+	effect: { operation: 'add', value: IMBUE_SHADOWS_ADRENALINE_PER_HIT },
 	source: { label: 'Imbue: Shadows' },
-	appliesToAbility: (ability) => ability.adrenaline > 0,
-	requiresContext: (ctx) => ctx.combatStyle === 'ranged'
+	appliesToAbility: (ability) => ability.target !== 'Self' && ability.target !== 'Varies',
+	requiresContext: (ctx) => ctx.combatStyle === 'ranged',
+	applicationGranularity: 'perHit'
 };
 
 /** Meteor Strike's own passive income while its buff window is active -- an ambient buff-window
@@ -877,7 +1132,7 @@ const ADRENALINE_MODIFIERS: Modifier[] = [
 	FURY_OF_THE_SMALL_MODIFIER
 ];
 
-const ADRENALINE_DEFINITION: ResourceDefinition = {
+const ADRENALINE_DEFINITION: Omit<ResourceDefinition, 'hitTicksForPlacement'> = {
 	id: 'adrenaline',
 	baseCap: ADRENALINE_MAX,
 	startingValue: 0,
@@ -904,7 +1159,12 @@ export function resolveAdrenaline(
 ): AdrenalineState[] {
 	const buffs = resolveBuffs(placements, abilities, timelineLength);
 	const ctx: ModifierContext = { combatStyle, ringOfVigourActive, furyOfTheSmallActive };
-	const definition: ResourceDefinition = { ...ADRENALINE_DEFINITION, startingValue: startingAdrenaline };
+	const definition: ResourceDefinition = {
+		...ADRENALINE_DEFINITION,
+		startingValue: startingAdrenaline,
+		hitTicksForPlacement: (placement, ability) =>
+			hitTicksForPlacement(placement, ability, placements, abilities, timelineLength)
+	};
 	return resolveResource(
 		definition,
 		placements,
@@ -956,7 +1216,10 @@ export const BERSERK_BASIC_MULTIPLIER_MODIFIER: BuffWindowModifier = {
 	source: { label: 'Berserk' }
 };
 
-const BLOODLUST_MODIFIERS: Modifier[] = [BERSERK_BLOODLUST_CAP_MODIFIER, BERSERK_BASIC_MULTIPLIER_MODIFIER];
+const BLOODLUST_MODIFIERS: Modifier[] = [
+	BERSERK_BLOODLUST_CAP_MODIFIER,
+	BERSERK_BASIC_MULTIPLIER_MODIFIER
+];
 
 const BLOODLUST_DEFINITION: ResourceDefinition = {
 	id: 'bloodlust',
@@ -982,7 +1245,11 @@ export function resolveBloodlust(
 	timelineLength: number
 ): ResourceState[] {
 	const buffs = resolveBuffs(placements, abilities, timelineLength);
-	const ctx: ModifierContext = { combatStyle: null, ringOfVigourActive: false, furyOfTheSmallActive: false };
+	const ctx: ModifierContext = {
+		combatStyle: null,
+		ringOfVigourActive: false,
+		furyOfTheSmallActive: false
+	};
 	return resolveResource(
 		BLOODLUST_DEFINITION,
 		placements,
