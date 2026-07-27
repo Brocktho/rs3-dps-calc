@@ -11,7 +11,10 @@ export interface Ability {
 	requiredSkill: string;
 	requiredLevel: number;
 	type: AbilityType;
-	/** Adrenaline cost (positive) or gain (negative), as a percentage. */
+	/** Adrenaline as a percentage: positive means the ability GENERATES this much (Basic
+	 *  abilities, e.g. 9 or 12), negative means it COSTS this much and requires at least
+	 *  that much banked to cast (Enhanced/Threshold/Ultimate, e.g. -15 to -100). Verified
+	 *  against the actual scraped values -- this is the opposite of how it might first read. */
 	adrenaline: number;
 	target: AbilityTarget;
 	/**
