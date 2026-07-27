@@ -454,6 +454,10 @@
 	let hasVulnBomb: boolean = $state(false);
 	let hasSmokeCloud: boolean = $state(false);
 	let weaponPoison: (typeof WEAPON_POISON_OPTIONS)[number] = $state('N/A');
+	// 0-100 for now -- some setups can push this to 120%, deferred until that's actually modeled.
+	let startingAdrenaline: number = $state(0);
+	let hasRingOfVigour: boolean = $state(false);
+	let hasFuryOfTheSmall: boolean = $state(false);
 
 	// --- Monster panel: selected boss for hit chance calculation ---
 	let selectedBossName: string = $state('');
@@ -491,6 +495,9 @@
 		hasVulnBomb: boolean;
 		hasSmokeCloud: boolean;
 		weaponPoison: (typeof WEAPON_POISON_OPTIONS)[number];
+		startingAdrenaline: number;
+		hasRingOfVigour: boolean;
+		hasFuryOfTheSmall: boolean;
 		timelinePlacements: TimelinePlacement[];
 		timelineStyleFilterEnabled: boolean;
 		timelineLength: number;
@@ -565,6 +572,13 @@
 			) {
 				weaponPoison = saved.weaponPoison;
 			}
+			if (typeof saved.startingAdrenaline === 'number') {
+				startingAdrenaline = saved.startingAdrenaline;
+			}
+			if (typeof saved.hasRingOfVigour === 'boolean') hasRingOfVigour = saved.hasRingOfVigour;
+			if (typeof saved.hasFuryOfTheSmall === 'boolean') {
+				hasFuryOfTheSmall = saved.hasFuryOfTheSmall;
+			}
 
 			if (
 				Array.isArray(saved.timelinePlacements) &&
@@ -622,6 +636,9 @@
 			hasVulnBomb,
 			hasSmokeCloud,
 			weaponPoison,
+			startingAdrenaline,
+			hasRingOfVigour,
+			hasFuryOfTheSmall,
 			timelinePlacements,
 			timelineStyleFilterEnabled,
 			timelineLength
@@ -1468,6 +1485,33 @@
 								</select>
 							</label>
 						</section>
+
+						<section class="config-section">
+							<h3>Global Unlocks</h3>
+							<label class="config-checkbox">
+								<input type="checkbox" bind:checked={hasRingOfVigour} />
+								Ring of Vigour
+							</label>
+							<label class="config-checkbox">
+								<input type="checkbox" bind:checked={hasFuryOfTheSmall} />
+								Fury of the Small
+							</label>
+						</section>
+
+						<section class="config-section">
+							<h3>Rotation</h3>
+							<label class="config-field">
+								Starting adrenaline (%)
+								<input
+									type="number"
+									min="0"
+									max="100"
+									value={startingAdrenaline}
+									oninput={(e) =>
+										(startingAdrenaline = Number((e.target as HTMLInputElement).value))}
+								/>
+							</label>
+						</section>
 					</div>
 				{/if}
 			</div>
@@ -1537,6 +1581,9 @@
 		{abilities}
 		{combatStyle}
 		{adTotal}
+		{startingAdrenaline}
+		{hasRingOfVigour}
+		{hasFuryOfTheSmall}
 		gearContext={timelineGearContext}
 		bind:placements={timelinePlacements}
 		bind:styleFilterEnabled={timelineStyleFilterEnabled}

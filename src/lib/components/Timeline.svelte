@@ -1,10 +1,14 @@
 <script lang="ts">
 	import {
 		abilityTickSpan,
+		BLOODLUST_BASE_CAP,
 		canPlaceAbility,
+		clearConflictingUses,
 		colorForAbility,
+		cooldownZonesFor,
 		cumulativeDamage,
 		damageByTick,
+		earliestAvailableTick,
 		findSwapTarget,
 		gcdPlacementAt,
 		insertAbilityAtAnchor,
@@ -12,8 +16,11 @@
 		nextOpenTick,
 		packIntoLanes,
 		requiredTimelineLength,
+		resolveAdrenaline,
+		resolveBloodlust,
 		resolveBuffs,
 		resolveChannels,
+		respectsCooldown,
 		runningAverageDps,
 		TICK_SECONDS,
 		type Ability,
@@ -27,6 +34,9 @@
 		abilities: Ability[];
 		combatStyle: CombatStyle | null;
 		adTotal: number;
+		startingAdrenaline: number;
+		hasRingOfVigour: boolean;
+		hasFuryOfTheSmall: boolean;
 		gearContext: GearContext;
 		placements: TimelinePlacement[];
 		styleFilterEnabled: boolean;
@@ -37,6 +47,9 @@
 		abilities,
 		combatStyle,
 		adTotal,
+		startingAdrenaline,
+		hasRingOfVigour,
+		hasFuryOfTheSmall,
 		gearContext,
 		placements = $bindable(),
 		styleFilterEnabled = $bindable(),
@@ -65,7 +78,7 @@
 	// hovering near the left/right edge of an existing GCD ability's icon -- insert before/after
 	// it, shifting everything from that point on later to make room.
 	type DragIntent =
-		| { kind: 'place'; tick: number }
+		| { kind: 'place'; tick: number; cooldownConflict: boolean }
 		| { kind: 'insert'; anchorId: string; side: 'before' | 'after'; tick: number };
 	let hoverIntent: DragIntent | null = $state(null);
 
@@ -131,6 +144,26 @@
 	// us detect the left/right "insert" edge zones of an existing GCD ability's icon.
 	const INSERT_EDGE_FRACTION = 0.25;
 
+	// A 'place' intent always tracks the exact tick the cursor is over -- the ability must be
+	// draggable freely, with no live snapping fighting the pointer while the drag is still in
+	// progress. `cooldownConflict` just flags whether dropping HERE would collide with another
+	// placement of this same ability, for the ghost's red styling; what actually happens to that
+	// conflict (the drop gets pushed past an EARLIER use's cooldown, or a LATER use gets cleared
+	// out of the way -- see handlePlaceDrop) is resolved only once, at drop time.
+	function placeIntent(tick: number): DragIntent {
+		const cooldownConflict = draggingAbility
+			? !respectsCooldown(
+					draggingAbility,
+					tick,
+					placements,
+					abilities,
+					timelineLength,
+					draggingPlacementId ?? undefined
+				)
+			: false;
+		return { kind: 'place', tick, cooldownConflict };
+	}
+
 	function computeDragIntent(e: DragEvent): DragIntent | null {
 		if (!gridEl || timelineLength === 0) return null;
 		const rect = gridEl.getBoundingClientRect();
@@ -139,15 +172,15 @@
 		const tick = Math.max(0, Math.min(timelineLength - 1, Math.floor(xPx / colWidth)));
 
 		if (!draggingAbility || isOffGcdAbility(draggingAbility)) {
-			return { kind: 'place', tick };
+			return placeIntent(tick);
 		}
 
 		const covering = gcdPlacementAt(tick, placements, abilities);
 		if (!covering || covering.id === draggingPlacementId) {
-			return { kind: 'place', tick };
+			return placeIntent(tick);
 		}
 		const coveringAbility = abilityByName(covering.abilityName);
-		if (!coveringAbility) return { kind: 'place', tick };
+		if (!coveringAbility) return placeIntent(tick);
 
 		const span = abilityTickSpan(coveringAbility);
 		const fraction = (xPx - covering.startTick * colWidth) / (span * colWidth);
@@ -162,7 +195,7 @@
 				tick: covering.startTick + span
 			};
 		}
-		return { kind: 'place', tick: covering.startTick };
+		return placeIntent(covering.startTick);
 	}
 
 	function onGridDragOver(e: DragEvent) {
@@ -208,36 +241,88 @@
 			flashInvalid(intent.tick);
 			return;
 		}
-		placements = result;
+		// Same policy as a plain place/move: honor exactly where this was asked to go (right
+		// before/after the anchor), and clear out any other placement of this same ability that's
+		// now too close, rather than rejecting the insert over a cooldown conflict.
+		const finalPlacement = result.find((p) => p.id === placementId);
+		placements = finalPlacement
+			? clearConflictingUses(ability, finalPlacement.startTick, result, abilities, timelineLength, placementId)
+			: result;
 		const required = requiredTimelineLength(placements, abilities);
 		if (required > timelineLength) timelineLength = required;
 	}
 
+	// Cooldown resolution happens ONLY here, at drop time -- never live during the drag (the ghost
+	// always tracks the cursor's exact raw position while hovering, so the ability can be dragged
+	// freely without fighting a live snap). On commit: a drop landing inside an EARLIER same-name
+	// placement's cooldown window pushes forward past it (that earlier placement is left alone --
+	// this only ever looks at placements at-or-before the resolved tick, so it can't eat into a
+	// LATER one's window). Once that's resolved, any LATER same-name placement that's now too
+	// close to the final tick is cleared instead -- moving a use closer to a future use of itself
+	// bumps that future use off the timeline, rather than blocking the move.
 	function handlePlaceDrop(e: DragEvent, tick: number) {
 		const movingId = e.dataTransfer?.getData('text/x-timeline-move-placement');
 		if (movingId) {
 			const placement = placements.find((p) => p.id === movingId);
 			const ability = placement ? abilityByName(placement.abilityName) : undefined;
 			if (!placement || !ability) return;
-			if (canPlaceAbility(ability, tick, placements, abilities, timelineLength, placement.id)) {
-				placements = placements.map((p) => (p.id === movingId ? { ...p, startTick: tick } : p));
+			const resolvedTick = earliestAvailableTick(
+				ability,
+				tick,
+				placements,
+				abilities,
+				timelineLength,
+				movingId
+			);
+			if (canPlaceAbility(ability, resolvedTick, placements, abilities, timelineLength, movingId)) {
+				const moved = placements.map((p) =>
+					p.id === movingId ? { ...p, startTick: resolvedTick } : p
+				);
+				placements = clearConflictingUses(
+					ability,
+					resolvedTick,
+					moved,
+					abilities,
+					timelineLength,
+					movingId
+				);
 				return;
 			}
-			const swapTarget = findSwapTarget(movingId, tick, placements, abilities, timelineLength);
+			const swapTarget = findSwapTarget(movingId, resolvedTick, placements, abilities, timelineLength);
 			if (swapTarget) {
-				// A swap exchanges each ability's own ORIGINAL start tick, not the raw tick the
-				// pointer was dropped at -- see findSwapTarget's doc comment for why using the
-				// raw drop tick here could leave the two new positions overlapping each other.
+				const swapTargetAbility = abilityByName(swapTarget.abilityName);
+				// A swap exchanges each ability's own ORIGINAL start tick, not the resolved drop
+				// tick -- see findSwapTarget's doc comment for why using the raw drop tick here
+				// could leave the two new positions overlapping each other.
 				const movingOriginalTick = placement.startTick;
 				const targetOriginalTick = swapTarget.startTick;
-				placements = placements.map((p) => {
+				let swapped = placements.map((p) => {
 					if (p.id === movingId) return { ...p, startTick: targetOriginalTick };
 					if (p.id === swapTarget.id) return { ...p, startTick: movingOriginalTick };
 					return p;
 				});
+				swapped = clearConflictingUses(
+					ability,
+					targetOriginalTick,
+					swapped,
+					abilities,
+					timelineLength,
+					movingId
+				);
+				if (swapTargetAbility) {
+					swapped = clearConflictingUses(
+						swapTargetAbility,
+						movingOriginalTick,
+						swapped,
+						abilities,
+						timelineLength,
+						swapTarget.id
+					);
+				}
+				placements = swapped;
 				return;
 			}
-			flashInvalid(tick);
+			flashInvalid(resolvedTick);
 			return;
 		}
 
@@ -245,11 +330,14 @@
 		if (!newAbilityName) return;
 		const ability = abilityByName(newAbilityName);
 		if (!ability) return;
-		if (!canPlaceAbility(ability, tick, placements, abilities, timelineLength)) {
-			flashInvalid(tick);
+		const resolvedTick = earliestAvailableTick(ability, tick, placements, abilities, timelineLength);
+		if (!canPlaceAbility(ability, resolvedTick, placements, abilities, timelineLength)) {
+			flashInvalid(resolvedTick);
 			return;
 		}
-		placements = [...placements, { id: crypto.randomUUID(), abilityName: ability.name, startTick: tick }];
+		const newId = crypto.randomUUID();
+		const added = [...placements, { id: newId, abilityName: ability.name, startTick: resolvedTick }];
+		placements = clearConflictingUses(ability, resolvedTick, added, abilities, timelineLength, newId);
 	}
 
 	// GCD row: one cell per tick, either an open drop-target or (at a GCD placement's start
@@ -334,6 +422,49 @@
 		)
 	);
 
+	// Adrenaline gauge: always on (not drag-gated, unlike the cooldown zone bands) -- simulates the
+	// gauge across the whole timeline given the starting value and each placement's own generate/
+	// spend, including Imbue: Shadows' Ranged per-hit bonus.
+	const adrenalineStates = $derived(
+		resolveAdrenaline(
+			placements,
+			abilities,
+			combatStyle,
+			startingAdrenaline,
+			timelineLength,
+			hasRingOfVigour,
+			hasFuryOfTheSmall
+		)
+	);
+	const currentAdrenaline = $derived(
+		adrenalineStates.length > 0 ? adrenalineStates[adrenalineStates.length - 1].value : startingAdrenaline
+	);
+	// Bloodlust is melee-only -- resolveBloodlust already no-ops non-melee placements, but the lane
+	// itself is only worth showing at all when melee is the active combat style.
+	const showBloodlust = $derived(combatStyle === 'melee');
+	// resolveBloodlust now returns the resource engine's own per-tick cap alongside the value
+	// (Berserk raising it to 8 is a Modifier the engine already resolves), so there's no need to
+	// separately re-derive Berserk's buff windows here just to know the ceiling.
+	const bloodlustStates = $derived(
+		showBloodlust ? resolveBloodlust(placements, abilities, timelineLength) : []
+	);
+
+	// Cooldown zones: while dragging an ability, a static red band over every tick range where that
+	// SAME ability can't be reused yet (one band per existing placement of it) -- shown alongside
+	// the ghost as a reference for *why* a spot is blocked, distinct from the ghost which shows
+	// *where it will actually land* once forward-snapped past these zones.
+	const cooldownZones = $derived.by(() => {
+		if (!draggingAbility) return [];
+		return cooldownZonesFor(
+			draggingAbility.name,
+			placements,
+			abilities,
+			timelineLength,
+			draggingPlacementId ?? undefined
+		);
+	});
+	const cooldownZonesAreOffGcd = $derived(draggingAbility ? isOffGcdAbility(draggingAbility) : false);
+
 	// Ghost preview: while dragging (palette or an existing placement), highlight where it would
 	// land at the currently-hovered tick, colored by whether the drop would succeed -- either as
 	// a normal placement or (for an existing GCD placement dragged onto another) a swap. Only
@@ -344,6 +475,12 @@
 	const placeGhostTick = $derived(hoverIntent?.kind === 'place' ? hoverIntent.tick : null);
 	const showGhost = $derived(
 		draggingAbility !== null && placeGhostTick !== null && placeGhostTick !== draggingOriginTick
+	);
+	// Dropping here will collide with another placement of this same ability's cooldown -- the
+	// ghost still shows exactly where the cursor is (no relocation), just flagged so the user
+	// knows that conflicting placement will be cleared rather than the drop being rejected.
+	const ghostCooldownConflict = $derived(
+		hoverIntent?.kind === 'place' && hoverIntent.cooldownConflict === true
 	);
 	const ghostValid = $derived.by(() => {
 		if (placeGhostTick === null || !draggingAbility) return false;
@@ -372,6 +509,18 @@
 	const insertAnchorId = $derived(hoverIntent?.kind === 'insert' ? hoverIntent.anchorId : null);
 	const insertSide = $derived(hoverIntent?.kind === 'insert' ? hoverIntent.side : null);
 
+	// Purely informational -- flags a placed ability whose tick didn't have enough banked
+	// adrenaline for its cost, without affecting placement/dragging in any way (see
+	// resolveAdrenaline's doc comment).
+	const insufficientAdrenalinePlacementIds = $derived.by(() => {
+		const ids = new Set<string>();
+		for (const p of placements) {
+			if (p.startTick < 0 || p.startTick >= timelineLength) continue;
+			if (adrenalineStates[p.startTick]?.insufficientForCost) ids.add(p.id);
+		}
+		return ids;
+	});
+
 	const gearForDamage = $derived(gearContext);
 
 	const tickDamage = $derived(
@@ -399,6 +548,7 @@
 		<div class="timeline-summary">
 			<span>Total damage: <strong>{totalDamage.toLocaleString()}</strong></span>
 			<span>Avg DPS: <strong>{overallAvgDps.toFixed(0)}</strong></span>
+			<span>Adrenaline: <strong>{Math.round(currentAdrenaline)}%</strong></span>
 		</div>
 	</div>
 
@@ -459,6 +609,41 @@
 					{/if}
 				{/each}
 			</div>
+
+			<div class="timeline-row resource-row adrenaline-row" style:grid-column="1 / -1">
+				{#each tickIndices as tick (tick)}
+					<div
+						class="resource-bar-cell"
+						style:grid-column={tick + 1}
+						title="Adrenaline: {Math.round(adrenalineStates[tick]?.value ?? 0)}%"
+					>
+						<div
+							class="resource-bar-fill adrenaline-fill"
+							style:height="{adrenalineStates[tick]?.value ?? 0}%"
+						></div>
+					</div>
+				{/each}
+			</div>
+
+			{#if showBloodlust}
+				<div class="timeline-row resource-row bloodlust-row" style:grid-column="1 / -1">
+					{#each tickIndices as tick (tick)}
+						{@const state = bloodlustStates[tick]}
+						{@const cap = state?.cap ?? BLOODLUST_BASE_CAP}
+						<div
+							class="resource-bar-cell"
+							style:grid-column={tick + 1}
+							title="Bloodlust: {state?.value ?? 0}/{cap}"
+						>
+							<div
+								class="resource-bar-fill bloodlust-fill"
+								class:empowered={(state?.value ?? 0) >= BLOODLUST_BASE_CAP}
+								style:height="{((state?.value ?? 0) / cap) * 100}%"
+							></div>
+						</div>
+					{/each}
+				</div>
+			{/if}
 
 			{#each buffLanes as lane, laneIndex (laneIndex)}
 				<div class="timeline-row buff-row" style:grid-column="1 / -1">
@@ -526,14 +711,32 @@
 										{insertSide === 'after' ? '▸' : '◂'}
 									</span>
 								{/if}
+								{#if insufficientAdrenalinePlacementIds.has(cell.placement!.id)}
+									<span
+										class="adrenaline-warning"
+										title="Not enough adrenaline banked at this point"
+										aria-hidden="true">!</span
+									>
+								{/if}
 							</button>
 						{/if}
 					{/if}
 				{/each}
+				{#if !cooldownZonesAreOffGcd}
+					{#each cooldownZones as zone (`${zone.startTick}-${zone.endTick}`)}
+						<div
+							class="cooldown-zone"
+							style:grid-column="{zone.startTick + 1} / span {zone.endTick - zone.startTick}"
+							style:grid-row="1"
+							aria-hidden="true"
+						></div>
+					{/each}
+				{/if}
 				{#if showGhost && !ghostIsOffGcd && placeGhostTick !== null}
 					<div
 						class="ghost-box"
 						class:invalid={!ghostValid}
+						class:cooldown-locked={ghostCooldownConflict}
 						style:grid-column="{placeGhostTick + 1} / span {ghostSpan}"
 						style:grid-row="1"
 						aria-hidden="true"
@@ -561,15 +764,33 @@
 									onclick={() => removePlacement(placement.id)}
 								>
 									<img src={ability.iconPath} alt={ability.name} width="18" height="18" />
+									{#if insufficientAdrenalinePlacementIds.has(placement.id)}
+										<span
+											class="adrenaline-warning off-gcd-warning"
+											title="Not enough adrenaline banked at this point"
+											aria-hidden="true">!</span
+										>
+									{/if}
 								</button>
 							{/if}
 						{/each}
 					</div>
 				{/each}
+				{#if cooldownZonesAreOffGcd}
+					{#each cooldownZones as zone (`${zone.startTick}-${zone.endTick}`)}
+						<div
+							class="cooldown-zone off-gcd-cooldown-zone"
+							style:grid-column="{zone.startTick + 1} / span {zone.endTick - zone.startTick}"
+							style:grid-row="1"
+							aria-hidden="true"
+						></div>
+					{/each}
+				{/if}
 				{#if showGhost && ghostIsOffGcd && placeGhostTick !== null}
 					<div
 						class="ghost-box off-gcd-ghost"
 						class:invalid={!ghostValid}
+						class:cooldown-locked={ghostCooldownConflict}
 						style:grid-column="{placeGhostTick + 1} / span 1"
 						style:grid-row="1"
 						aria-hidden="true"
@@ -758,6 +979,36 @@
 		position: relative;
 	}
 
+	/* Always-on resource lanes (adrenaline gauge, Bloodlust stacks) -- one thin bar-fill cell per
+	   tick, height proportional to the resource's value at that tick relative to its current cap. */
+	.resource-row {
+		height: 0.85rem;
+	}
+
+	.resource-bar-cell {
+		display: flex;
+		align-items: flex-end;
+		height: 100%;
+	}
+
+	.resource-bar-fill {
+		width: 100%;
+		border-radius: 1px;
+		min-height: 1px;
+	}
+
+	.adrenaline-fill {
+		background: linear-gradient(180deg, #f4d78c 0%, #d8b566 100%);
+	}
+
+	.bloodlust-fill {
+		background: linear-gradient(180deg, #9a9a9a 0%, #6b6b6b 100%);
+	}
+
+	.bloodlust-fill.empowered {
+		background: linear-gradient(180deg, #e14b5f 0%, #a83240 100%);
+	}
+
 	.lane-box {
 		display: flex;
 		align-items: center;
@@ -841,7 +1092,38 @@
 		background: rgba(217, 119, 87, 0.2);
 	}
 
+	/* Distinct from .invalid (a rejected GCD-collision drop): this ghost position IS where the
+	   drop will actually land -- it's just been forced forward past a cooldown-blocked zone, so it
+	   gets a solid red fill instead of the invalid style's dashed orange to read as "forced", not
+	   "rejected". */
+	.ghost-box.cooldown-locked {
+		border-color: #e14b5f;
+		border-style: solid;
+		background: rgba(225, 75, 95, 0.3);
+	}
+
 	.off-gcd-ghost {
+		height: 1.6rem;
+	}
+
+	/* Static reference band(s) shown while dragging an ability, marking every stretch where that
+	   SAME ability can't be reused yet due to its own cooldown -- one band per existing placement
+	   of it. Sits in the same row/columns the ghost does, but doesn't move with the cursor. */
+	.cooldown-zone {
+		height: 2.4rem;
+		border-radius: 3px;
+		background: repeating-linear-gradient(
+			45deg,
+			rgba(225, 75, 95, 0.22),
+			rgba(225, 75, 95, 0.22) 6px,
+			rgba(225, 75, 95, 0.1) 6px,
+			rgba(225, 75, 95, 0.1) 12px
+		);
+		border: 1px solid rgba(225, 75, 95, 0.5);
+		pointer-events: none;
+	}
+
+	.off-gcd-cooldown-zone {
 		height: 1.6rem;
 	}
 
@@ -881,6 +1163,33 @@
 		left: auto;
 		right: 0;
 		justify-content: flex-end;
+	}
+
+	/* Purely informational warning badge -- doesn't affect placement/dragging (see
+	   insufficientAdrenalinePlacementIds). */
+	.adrenaline-warning {
+		position: absolute;
+		top: -0.35rem;
+		right: -0.35rem;
+		width: 1rem;
+		height: 1rem;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		border-radius: 50%;
+		background: #e14b5f;
+		color: #14100c;
+		font-size: 0.7rem;
+		font-weight: 700;
+		pointer-events: none;
+	}
+
+	.off-gcd-warning {
+		width: 0.75rem;
+		height: 0.75rem;
+		font-size: 0.55rem;
+		top: -0.25rem;
+		right: -0.25rem;
 	}
 
 	.placed-icon:hover {
