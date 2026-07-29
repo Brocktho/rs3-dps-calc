@@ -47,12 +47,43 @@
 	// stationary cursor that ends up over a newly laid-out <li>.
 	let suppressHoverUntilMove = false;
 
-	const filteredOptions = $derived.by(() => {
+	// Infinite scroll over the matched options: only `renderLimit` <li>s exist in the DOM at
+	// once (rather than every match), growing by RENDER_PAGE_SIZE as the user scrolls near the
+	// bottom of the listbox (see onListboxScroll). Without a cap, a several-thousand-item
+	// options list (e.g. the full weapon/armour/ammo roster) would render every match into the
+	// DOM on every keystroke -- each row has an <img> plus nested spans, so a few thousand of
+	// them makes typing visibly stutter/freeze.
+	const RENDER_PAGE_SIZE = 50;
+	let renderLimit = $state(RENDER_PAGE_SIZE);
+
+	const matchingOptions = $derived.by(() => {
 		if (!listboxOpen) return options;
 		const needle = query.trim().toLowerCase();
 		if (!needle) return options;
 		return options.filter((o) => searchTextFor(o).includes(needle));
 	});
+
+	// Reset the render window back to one page whenever the match set itself changes (new
+	// search narrows/widens the results) -- otherwise a previously-scrolled-open limit from a
+	// broader search would carry over and immediately render hundreds of rows for a new query.
+	$effect(() => {
+		matchingOptions;
+		renderLimit = RENDER_PAGE_SIZE;
+	});
+
+	const filteredOptions = $derived(matchingOptions.slice(0, renderLimit));
+	const truncatedCount = $derived(matchingOptions.length - filteredOptions.length);
+
+	function onListboxScroll(e: Event) {
+		if (truncatedCount <= 0) return;
+		const el = e.currentTarget as HTMLUListElement;
+		// Grow the render window once the user has scrolled within ~2 row-heights of the
+		// bottom, so more rows are already in the DOM by the time they'd actually reach them.
+		const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 80;
+		if (nearBottom) {
+			renderLimit = Math.min(renderLimit + RENDER_PAGE_SIZE, matchingOptions.length);
+		}
+	}
 
 	function openListbox() {
 		listboxOpen = true;
@@ -100,6 +131,13 @@
 			if (!listboxOpen) {
 				openListbox();
 				return;
+			}
+			// Grow the render window a page early when arrowing down near the current end of
+			// the rendered list, so keyboard-only users can walk past the initial page just
+			// like scrolling does -- otherwise ArrowDown would dead-end at row `renderLimit`
+			// even though there are more (unrendered) matches below.
+			if (activeIndex >= filteredOptions.length - 5 && truncatedCount > 0) {
+				renderLimit = Math.min(renderLimit + RENDER_PAGE_SIZE, matchingOptions.length);
 			}
 			activeIndex = Math.min(activeIndex + 1, filteredOptions.length - 1);
 		} else if (e.key === 'ArrowUp') {
@@ -216,6 +254,7 @@
 				id={listboxId}
 				style:position-anchor={anchorName}
 				onmousemove={() => (suppressHoverUntilMove = false)}
+				onscroll={onListboxScroll}
 			>
 				{#if filteredOptions.length === 0}
 					<li class="listbox-empty">No matches</li>
@@ -246,6 +285,9 @@
 						{/if}
 					</li>
 				{/each}
+				{#if truncatedCount > 0}
+					<li class="listbox-empty">+{truncatedCount} more &ndash; scroll for more</li>
+				{/if}
 			</ul>
 		</div>
 	{/if}

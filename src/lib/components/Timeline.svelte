@@ -17,11 +17,12 @@
 		packIntoLanes,
 		requiredTimelineLength,
 		resolveAdrenaline,
+		resolveAllBuffs,
 		resolveBloodlust,
-		resolveBuffs,
 		resolveChannels,
 		respectsCooldown,
 		runningAverageDps,
+		slidingWindowDpm,
 		TICK_SECONDS,
 		type Ability,
 		type CombatStyle,
@@ -38,9 +39,30 @@
 		hasRingOfVigour: boolean;
 		hasFuryOfTheSmall: boolean;
 		gearContext: GearContext;
+		/** How many pieces of each armour set (keyed by Armour.setName) are currently equipped --
+		 *  see ModifierContext.setPieceCounts. Drives set-effect Modifiers like Vestments of
+		 *  havoc's Herald of Chaos (2pc/3pc/4pc thresholds). */
+		setPieceCounts: Record<string, number>;
+		hasMeleeWeaponEquipped: boolean;
 		placements: TimelinePlacement[];
 		styleFilterEnabled: boolean;
 		timelineLength: number;
+		/** Player's hit chance (0-100) against the selected target, keyed by combat style -- see
+		 *  formulas/hitChance.ts and damageByTick's `hitChanceByStyle` param. Optional so Timeline
+		 *  still works standalone/in tests with no target selected (defaults to 100% everywhere). */
+		hitChanceByStyle?: Partial<Record<CombatStyle, number>>;
+		/** Every setup's own damage series (including this one), for the multi-setup overlay chart --
+		 *  see `+page.svelte`'s `setupSeries`. Optional so Timeline can still be used/tested standalone
+		 *  with just its own single-setup chart. */
+		overlaySeries?: {
+			id: string;
+			label: string;
+			color: string;
+			tickDamage: number[];
+			cumulative: number[];
+			dpm: number[];
+			adrenaline: number[];
+		}[];
 	}
 
 	let {
@@ -51,9 +73,13 @@
 		hasRingOfVigour,
 		hasFuryOfTheSmall,
 		gearContext,
+		setPieceCounts,
+		hasMeleeWeaponEquipped,
 		placements = $bindable(),
 		styleFilterEnabled = $bindable(),
-		timelineLength = $bindable()
+		timelineLength = $bindable(),
+		overlaySeries,
+		hitChanceByStyle = {}
 	}: Props = $props();
 
 	let paletteSearch: string = $state('');
@@ -88,7 +114,13 @@
 			list = list.filter((a) => a.style === combatStyle);
 		}
 		const needle = paletteSearch.trim().toLowerCase();
-		if (needle) list = list.filter((a) => a.name.toLowerCase().includes(needle));
+		if (needle) {
+			list = list.filter(
+				(a) =>
+					a.name.toLowerCase().includes(needle) ||
+					(a.weapons?.some((w) => w.toLowerCase().includes(needle)) ?? false)
+			);
+		}
 		return list;
 	});
 
@@ -96,8 +128,23 @@
 		return abilities.find((a) => a.name === name);
 	}
 
+	function weaponChipIconPath(ability: Ability): string | null {
+		if (!ability.weapons || ability.weapons.length === 0) return null;
+		const slug = ability.weapons[0]
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, '-')
+			.replace(/^-+|-+$/g, '');
+		return `/weapon-icons/${slug}.png`;
+	}
+
 	function placeAbility(ability: Ability) {
-		const tick = nextOpenTick(ability, placements, abilities, timelineLength);
+		const tick = nextOpenTick(
+			ability,
+			placements,
+			abilities,
+			timelineLength,
+			allBuffs.endlessAssaultBleedPlacementIds
+		);
 		if (tick === null) return;
 		placements = [
 			...placements,
@@ -372,19 +419,34 @@
 		return byTick;
 	});
 
+	// Single shared resolution of every buff/status effect this app models (ordinary self-buffs,
+	// Vestments of havoc's set effects, Greater Fury's crit-on-next-hit, Greater Barge's Endless
+	// Assault bleed conversion) -- computed once and reused by the buff lane, the channel lane
+	// (bleed exemption), and the damage engine (crit multiplier), rather than re-resolving it
+	// independently in each derived value below.
+	const allBuffs = $derived(
+		resolveAllBuffs(placements, abilities, timelineLength, setPieceCounts, gearContext)
+	);
+
 	// Buff lane: each self-buff placement packed into the minimum number of stacked rows needed
 	// (a compact Gantt -- only buffs whose active windows actually overlap get separate rows).
-	const packedBuffs = $derived(packIntoLanes(resolveBuffs(placements, abilities, timelineLength)));
+	const packedBuffs = $derived(packIntoLanes(allBuffs.buffs));
 	const buffLaneCount = $derived(packedBuffs.reduce((max, b) => Math.max(max, b.lane + 1), 0));
 	const buffLanes = $derived(
 		Array.from({ length: buffLaneCount }, (_, lane) => packedBuffs.filter((b) => b.lane === lane))
 	);
 
 	// Channel/DoT lane: same lane-packing, over each channelled placement's (possibly
-	// interruption-truncated) hit window.
+	// interruption-truncated) hit window. Endless Assault-converted placements are exempted from
+	// truncation (see resolveChannels' bleedPlacementIds) and flagged `isBleed` for styling.
 	const packedChannels = $derived(
 		packIntoLanes(
-			resolveChannels(placements, abilities, timelineLength).map((c) => ({
+			resolveChannels(
+				placements,
+				abilities,
+				timelineLength,
+				allBuffs.endlessAssaultBleedPlacementIds
+			).map((c) => ({
 				...c,
 				endTick: c.barEndTick
 			}))
@@ -410,7 +472,10 @@
 			startingAdrenaline,
 			timelineLength,
 			hasRingOfVigour,
-			hasFuryOfTheSmall
+			hasFuryOfTheSmall,
+			setPieceCounts,
+			hasMeleeWeaponEquipped,
+			gearContext
 		)
 	);
 	const currentAdrenaline = $derived(
@@ -425,7 +490,7 @@
 	// (Berserk raising it to 8 is a Modifier the engine already resolves), so there's no need to
 	// separately re-derive Berserk's buff windows here just to know the ceiling.
 	const bloodlustStates = $derived(
-		showBloodlust ? resolveBloodlust(placements, abilities, timelineLength) : []
+		showBloodlust ? resolveBloodlust(placements, abilities, timelineLength, setPieceCounts) : []
 	);
 
 	// Cooldown zones: while dragging an ability, a static red band over every tick range where that
@@ -522,11 +587,33 @@
 
 	const gearForDamage = $derived(gearContext);
 
+	const berserkBuffs = $derived(allBuffs.buffs.filter((b) => b.abilityName === 'Berserk'));
+	const searingWindsBuffs = $derived(allBuffs.buffs.filter((b) => b.abilityName === 'Galeshot'));
+	const deathsSwiftnessBuffs = $derived(
+		allBuffs.buffs.filter(
+			(b) => b.abilityName === "Death's Swiftness" || b.abilityName === "Greater Death's Swiftness"
+		)
+	);
+
 	const tickDamage = $derived(
-		damageByTick(placements, abilities, adTotal, gearForDamage, timelineLength)
+		damageByTick(
+			placements,
+			abilities,
+			adTotal,
+			gearForDamage,
+			timelineLength,
+			allBuffs.greaterFuryCritPlacementIds,
+			allBuffs.endlessAssaultBleedPlacementIds,
+			allBuffs.chaosRoarBonusPlacementIds,
+			berserkBuffs,
+			searingWindsBuffs,
+			deathsSwiftnessBuffs,
+			hitChanceByStyle
+		)
 	);
 	const cumulative = $derived(cumulativeDamage(tickDamage));
 	const avgDps = $derived(runningAverageDps(tickDamage));
+	const dpm = $derived(slidingWindowDpm(tickDamage));
 	const totalDamage = $derived(cumulative[cumulative.length - 1] ?? 0);
 	const overallAvgDps = $derived(avgDps[avgDps.length - 1] ?? 0);
 
@@ -539,6 +626,13 @@
 	function clearTimeline() {
 		placements = [];
 	}
+
+	// Which of the 3 charts to show below the timeline -- all visible by default (matches prior
+	// behavior). All three showing at once pushes the chart block far down the page, making it
+	// bothersome to scroll past when you only care about one or two of them.
+	let showCumulativeChart = $state(true);
+	let showDpmChart = $state(true);
+	let showAdrenalineChart = $state(true);
 </script>
 
 <div class="timeline-builder">
@@ -548,6 +642,20 @@
 			<span>Total damage: <strong>{totalDamage.toLocaleString()}</strong></span>
 			<span>Avg DPS: <strong>{overallAvgDps.toFixed(0)}</strong></span>
 			<span>Adrenaline: <strong>{Math.round(currentAdrenaline)}%</strong></span>
+		</div>
+		<div class="chart-toggles">
+			<label class="chart-toggle">
+				<input type="checkbox" bind:checked={showCumulativeChart} />
+				Cumulative damage
+			</label>
+			<label class="chart-toggle">
+				<input type="checkbox" bind:checked={showDpmChart} />
+				DPM
+			</label>
+			<label class="chart-toggle">
+				<input type="checkbox" bind:checked={showAdrenalineChart} />
+				Adrenaline
+			</label>
 		</div>
 	</div>
 
@@ -577,6 +685,15 @@
 					onclick={() => placeAbility(ability)}
 				>
 					<img src={ability.iconPath} alt={ability.name} width="28" height="28" />
+					{#if weaponChipIconPath(ability)}
+						<img
+							class="weapon-chip"
+							src={weaponChipIconPath(ability)}
+							alt=""
+							width="14"
+							height="14"
+						/>
+					{/if}
 				</button>
 			{/each}
 			{#if filteredAbilities.length === 0}
@@ -683,12 +800,17 @@
 					{#each lane as channel (channel.placementId)}
 						<div
 							class="lane-box channel-box"
+							class:bleed-box={channel.isBleed}
 							style:grid-column="{channel.startTick + 1} / span {channel.barEndTick -
 								channel.startTick}"
 							style:border-color={colorForAbility(channel.abilityName)}
-							title="{channel.abilityName} (ticks {channel.startTick}-{channel.barEndTick - 1})"
+							title="{channel.abilityName} (ticks {channel.startTick}-{channel.barEndTick - 1}){channel.isBleed
+								? ' -- converted to damage over time by Greater Barge, cannot be interrupted'
+								: ''}"
 						>
-							<span class="channel-label">{channel.abilityName}</span>
+							<span class="channel-label"
+								>{channel.abilityName}{channel.isBleed ? ' (DoT)' : ''}</span
+							>
 							{#each channel.hitTicks as hitTick (hitTick)}
 								<span
 									class="channel-tick"
@@ -724,6 +846,15 @@
 								onclick={() => removePlacement(cell.placement!.id)}
 							>
 								<img src={ability.iconPath} alt={ability.name} width="24" height="24" />
+								{#if weaponChipIconPath(ability)}
+									<img
+										class="weapon-chip"
+										src={weaponChipIconPath(ability)}
+										alt=""
+										width="12"
+										height="12"
+									/>
+								{/if}
 								{#if insertAnchorId === cell.placement!.id}
 									<span
 										class="insert-indicator"
@@ -745,6 +876,21 @@
 										class="cooldown-warning"
 										title="This is not a valid placement for this ability due to cooldown"
 										aria-hidden="true">▲</span
+									>
+								{/if}
+								{#if allBuffs.greaterFuryCritPlacementIds.has(cell.placement!.id)}
+									<span
+										class="crit-marker"
+										title="Consumed Greater Fury: guaranteed critical strike (1.5x damage)"
+										aria-hidden="true">✦</span
+									>
+								{/if}
+								{#if allBuffs.chaosRoarBonusPlacementIds.has(cell.placement!.id)}
+									<span
+										class="chaos-roar-marker"
+										class:shifted={allBuffs.greaterFuryCritPlacementIds.has(cell.placement!.id)}
+										title="Consumed Chaos Roar: empowered strike (1.75x base damage on the first hit)"
+										aria-hidden="true">⚔</span
 									>
 								{/if}
 							</button>
@@ -793,6 +939,15 @@
 									onclick={() => removePlacement(placement.id)}
 								>
 									<img src={ability.iconPath} alt={ability.name} width="18" height="18" />
+									{#if weaponChipIconPath(ability)}
+										<img
+											class="weapon-chip off-gcd-chip"
+											src={weaponChipIconPath(ability)}
+											alt=""
+											width="10"
+											height="10"
+										/>
+									{/if}
 									{#if insufficientAdrenalinePlacementIds.has(placement.id)}
 										<span
 											class="adrenaline-warning off-gcd-warning"
@@ -833,10 +988,22 @@
 					></div>
 				{/if}
 			</div>
+
+			<div class="timeline-row chart-row" style:grid-column="1 / -1">
+				<TimelineChart
+					damageByTick={tickDamage}
+					{cumulative}
+					{dpm}
+					adrenaline={adrenalineStates.map((s) => s.value)}
+					{timelineLength}
+					{overlaySeries}
+					showCumulative={showCumulativeChart}
+					showDpm={showDpmChart}
+					showAdrenaline={showAdrenalineChart}
+				/>
+			</div>
 		</div>
 	</div>
-
-	<TimelineChart damageByTick={tickDamage} {cumulative} {avgDps} />
 </div>
 
 <style>
@@ -876,6 +1043,21 @@
 
 	.timeline-summary strong {
 		color: #f4d78c;
+	}
+
+	.chart-toggles {
+		display: flex;
+		gap: 1rem;
+		flex-wrap: wrap;
+		width: 100%;
+	}
+
+	.chart-toggle {
+		display: flex;
+		align-items: center;
+		gap: 0.35rem;
+		font-size: 0.8rem;
+		color: #cbb98e;
 	}
 
 	.palette {
@@ -930,6 +1112,7 @@
 	}
 
 	.palette-icon {
+		position: relative;
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -1015,6 +1198,12 @@
 		position: relative;
 	}
 
+	.chart-row {
+		margin-top: 0.75rem;
+		padding-top: 0.75rem;
+		border-top: 1px solid #3a2f1c;
+	}
+
 	/* Always-on resource lanes (adrenaline gauge, Bloodlust stacks) -- one thin bar-fill cell per
 	   tick, height proportional to the resource's value at that tick relative to its current cap. */
 	.resource-row {
@@ -1066,6 +1255,11 @@
 		background: rgba(255, 255, 255, 0.04);
 		border: 1px solid;
 		color: #cbb98e;
+	}
+
+	.bleed-box {
+		background: rgba(139, 0, 0, 0.12);
+		border-style: dashed;
 	}
 
 	.channel-label {
@@ -1279,6 +1473,71 @@
 		font-size: 0.6rem;
 		top: -0.25rem;
 		left: -0.25rem;
+	}
+
+	/* Small badge identifying which weapon a per-weapon special attack belongs to, shown on
+	   the bottom-right corner of the shared "Weapon Special Attack" icon -- the opposite
+	   corners are already claimed by .adrenaline-warning (top-right) and .cooldown-warning
+	   (top-left). */
+	.weapon-chip {
+		position: absolute;
+		bottom: -0.3rem;
+		right: -0.3rem;
+		width: 0.9rem;
+		height: 0.9rem;
+		border-radius: 2px;
+		border: 1px solid #14100c;
+		background: #14100c;
+		pointer-events: none;
+	}
+
+	.weapon-chip.off-gcd-chip {
+		width: 0.7rem;
+		height: 0.7rem;
+		bottom: -0.2rem;
+		right: -0.2rem;
+	}
+
+	/* Purely informational -- flags the one placement that actually consumed Greater Fury's
+	   guaranteed-crit buff (see allBuffs.greaterFuryCritPlacementIds). The bottom-left corner is
+	   the only one not already claimed by .adrenaline-warning/.cooldown-warning/.weapon-chip. */
+	.crit-marker {
+		position: absolute;
+		bottom: -0.35rem;
+		left: -0.35rem;
+		width: 1rem;
+		height: 1rem;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: #f4d78c;
+		font-size: 0.8rem;
+		line-height: 1;
+		text-shadow: 0 0 2px rgba(20, 16, 12, 0.9);
+		pointer-events: none;
+	}
+
+	/* Same corner as .crit-marker (both are "consumed a next-hit buff" indicators) -- shifted left
+	   via .shifted on the rare placement that somehow consumes both in the same tick, so neither
+	   marker is fully hidden behind the other. */
+	.chaos-roar-marker {
+		position: absolute;
+		bottom: -0.35rem;
+		left: -0.35rem;
+		width: 1rem;
+		height: 1rem;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: #d97757;
+		font-size: 0.75rem;
+		line-height: 1;
+		text-shadow: 0 0 2px rgba(20, 16, 12, 0.9);
+		pointer-events: none;
+	}
+
+	.chaos-roar-marker.shifted {
+		left: -0.9rem;
 	}
 
 	.placed-icon:hover {

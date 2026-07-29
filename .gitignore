@@ -24,3 +24,4 @@ vite.config.ts.timestamp-*
 
 # Local cache of raw runescape.wiki scrape data (see scripts/scrape/)
 .scrape-cache
+__pycache__

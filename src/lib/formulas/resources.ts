@@ -36,6 +36,14 @@ export interface ResourceDefinition {
 	 *  still lands hits that are each eligible for a per-hit bonus). Optional only so resources with
 	 *  no such concept (Bloodlust) don't need to supply a trivial passthrough. */
 	hitTicksForPlacement?: (placement: TimelinePlacement, ability: Ability) => number[];
+	/** Unsigned bonus refunded right alongside a spend-placement's own `costRefund` Modifiers (Ring
+	 *  of Vigour, etc.), but resolved per EXACT PLACEMENT/TICK rather than by any static Modifier
+	 *  gate -- needed for effects whose activation depends on simulation-time state the generic
+	 *  Modifier system can't express (PassiveModifier.isActive/appliesToAbility only ever see the
+	 *  ability, never the specific tick or placement instance), e.g. Vestments of havoc's instant
+	 *  20% burst: re-triggering the Havoc buff fires only on the SPECIFIC melee-ultimate placement
+	 *  that re-triggered it, not every melee ultimate cast. Optional; defaults to no bonus. */
+	costRefundForPlacement?: (placement: TimelinePlacement, ability: Ability, tick: number) => number;
 }
 
 function clamp(value: number, cap: number): number {
@@ -109,7 +117,13 @@ export function resolveResource(
 		}
 	}
 
-	let value = clamp(definition.startingValue, definition.baseCap);
+	// The starting value must be clamped against whatever cap is ALREADY active at tick 0 (e.g. a
+	// PassiveModifier like Vestments of havoc's 4-piece +20% adrenaline cap, which -- unlike a
+	// buffWindow modifier -- has no "activation tick" and is simply always active given the
+	// player's static gear) -- not unconditionally the resource's own baseCap, or a starting value
+	// intentionally set above 100 would be wrongly clamped back down before the loop even begins.
+	const initialCapResult = resolveAspect(modifiers, definition.id, 'cap', 0, buffs, ctx);
+	let value = clamp(definition.startingValue, initialCapResult.override ?? definition.baseCap);
 	let sortedIndex = 0;
 
 	for (let tick = 0; tick < timelineLength; tick++) {
@@ -146,6 +160,10 @@ export function resolveResource(
 					ability
 				);
 				if (refund.additive !== 0) value = clamp(value + refund.additive, cap);
+				if (definition.costRefundForPlacement) {
+					const placementRefund = definition.costRefundForPlacement(placement, ability, tick);
+					if (placementRefund !== 0) value = clamp(value + placementRefund, cap);
+				}
 			} else if (base > 0) {
 				const bonus = resolveAspect(
 					perPlacementModifiers,

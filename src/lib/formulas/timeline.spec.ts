@@ -3,10 +3,14 @@ import { abilities } from '../data/abilities';
 import { resolveAspect, type ModifierContext } from './modifiers';
 import {
 	abilityDamageForPlacement,
+	applyVestmentsBerserkExtension,
 	BERSERK_BASIC_MULTIPLIER_MODIFIER,
 	BERSERK_BLOODLUST_CAP_MODIFIER,
+	BERSERK_MELEE_DAMAGE_MULTIPLIER,
 	buffBaseEndTick,
 	canPlaceAbility,
+	CHAOS_ROAR_DAMAGE_MULTIPLIER,
+	CHAOS_ROAR_DURATION_TICKS,
 	clearConflictingUses,
 	colorForAbility,
 	cooldownZonesFor,
@@ -16,11 +20,19 @@ import {
 	effectiveCooldownTicks,
 	findSwapTarget,
 	gcdPlacementAt,
+	GREATER_BARGE_BLEED_WINDOW_TICKS,
+	GREATER_BARGE_OUT_OF_COMBAT_TICKS,
+	GREATER_FURY_CRIT_MULTIPLIER,
+	GREATER_FURY_DURATION_TICKS,
 	groupBuffExtensions,
+	HAVOC_INSTANT_BURST_PERCENT,
+	HAVOC_REGEN_PERCENT,
 	hitCountFor,
 	IMBUE_SHADOWS_ADRENALINE_MODIFIER,
 	insertAbilityAtAnchor,
+	isMeleeUltimate,
 	isOffGcdAbility,
+	MAX_DAMAGE_PER_HIT,
 	nextOpenTick,
 	packIntoLanes,
 	parseBloodlustConsume,
@@ -34,14 +46,25 @@ import {
 	removePlacementCloseGap,
 	requiredTimelineLength,
 	resolveAdrenaline,
+	resolveAllBuffs,
 	resolveBloodlust,
 	resolveBuffs,
 	resolveChannels,
 	resolveDamagePercent,
+	resolveChaosRoarBuffs,
+	resolveEndlessAssaultBleeds,
+	resolveGreaterFuryBuffs,
+	resolveHavocBuffs,
+	resolveHitCountVariant,
 	respectsCooldown,
 	RING_OF_VIGOUR_MODIFIER,
+	MIN_DPM_WINDOW_SECONDS,
 	runningAverageDps,
+	SEARING_WINDS_BONUS_PERCENT,
 	shiftPlacementsFrom,
+	slidingWindowDpm,
+	VESTMENTS_OF_HAVOC_4PC_ADRENALINE_CAP,
+	VESTMENTS_OF_HAVOC_SET_NAME,
 	type GearContext,
 	type TimelinePlacement
 } from './timeline';
@@ -67,6 +90,15 @@ const hurricane = abilities.find((a) => a.name === 'Hurricane')!;
 const galeshot = abilities.find((a) => a.name === 'Galeshot')!; // applies "Searing Winds" self-buff, 10 ticks
 const shadowTendrils = abilities.find((a) => a.name === 'Shadow Tendrils')!; // extends Shadow imbued +6 ticks
 const greaterFlurry = abilities.find((a) => a.name === 'Greater Flurry')!; // channelled, 8 hits, extends Berserk +1/hit
+const greaterFury = abilities.find((a) => a.name === 'Greater Fury')!; // 25-tick guaranteed-crit-on-next-hit buff
+const chaosRoar = abilities.find((a) => a.name === 'Chaos Roar')!; // 12-tick 1.75x-next-strike buff
+const greaterBarge = abilities.find((a) => a.name === 'Greater Barge')!; // grants Endless Assault if 8+ ticks since last damage
+const surge = abilities.find((a) => a.name === 'Surge')!; // target: 'Self', off-gcd, non-damaging
+const dismember = abilities.find((a) => a.name === 'Dismember')!; // unconditional bleed, 8 hits/2 ticks
+const omnipower = abilities.find((a) => a.name === 'Omnipower')!; // type: 'Ultimate', igneous Kal-Mej/Kal-Zuk hit-count variant
+const deathSkulls = abilities.find((a) => a.name === 'Death Skulls')!; // type: 'Ultimate', igneous Kal-Mor/Kal-Zuk hit-count variant
+const slaughter = abilities.find((a) => a.name === 'Slaughter')!; // unconditional bleed, 6 hits/3 ticks
+const massacre = abilities.find((a) => a.name === 'Massacre')!; // unconditional bleed, 7 hits/4 ticks
 
 const NEUTRAL_GEAR: GearContext = {
 	isTwoHanded: false,
@@ -192,16 +224,63 @@ describe('damageByTick / cumulativeDamage / runningAverageDps', () => {
 	});
 });
 
+describe('slidingWindowDpm', () => {
+	it('divides by elapsed time (not the full window) before the window has filled, so early ticks read as the true rate over what has actually happened', () => {
+		// windowSeconds=6, tickSeconds=1 -> windowTicks=6, full window = 6s. Using a window well
+		// past MIN_DPM_WINDOW_SECONDS (1.8s) so the elapsed-time clamp (not the GCD floor) is what's
+		// under test here -- see the dedicated floor test below for ticks inside one GCD.
+		const byTick = [100, 100, 100, 100, 100, 100, 100];
+		const dpm = slidingWindowDpm(byTick, 6, 1);
+		// Only 2s has elapsed at tick 1 (past the 1.8s GCD floor) -- divide by that 2s, not the
+		// full 6s window, so the rate isn't diluted by ticks that are simply in the future.
+		expect(dpm[1]).toBeCloseTo((200 / 2) * 60);
+		expect(dpm[2]).toBeCloseTo((300 / 3) * 60);
+		// Once the window is genuinely full, it's a true trailing sum over exactly windowTicks.
+		expect(dpm[5]).toBeCloseTo((600 / 6) * 60);
+		expect(dpm[6]).toBeCloseTo((600 / 6) * 60);
+	});
+
+	it('drops damage that falls out of the trailing window', () => {
+		const byTick = [600, 0, 0, 0, 0, 0, 0];
+		const dpm = slidingWindowDpm(byTick, 6, 1);
+		expect(dpm[5]).toBeCloseTo((600 / 6) * 60);
+		// Tick 6: the window is [1..6], which no longer includes tick 0's burst.
+		expect(dpm[6]).toBeCloseTo(0);
+	});
+
+	it('floors the divisor at one GCD (1.8s/3 ticks), so a single early hit reads as one flat rate instead of spiking then decaying', () => {
+		// Real tick length (0.6s) and a window bigger than one GCD, matching how the chart actually
+		// calls this in practice.
+		const byTick = [1000, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+		const dpm = slidingWindowDpm(byTick);
+		// Ticks 0, 1, 2 all fall within one GCD (0.6s, 1.2s, 1.8s elapsed) -- nothing else could
+		// possibly have landed yet, so all three should read the identical rate over 1.8s, not an
+		// inflated-then-decaying curve keyed off however little time has technically elapsed.
+		const expected = (1000 / MIN_DPM_WINDOW_SECONDS) * 60;
+		expect(dpm[0]).toBeCloseTo(expected);
+		expect(dpm[1]).toBeCloseTo(expected);
+		expect(dpm[2]).toBeCloseTo(expected);
+		// Tick 3 (2.4s elapsed) is past the floor, so it's back to dividing by real elapsed time.
+		expect(dpm[3]).toBeCloseTo((1000 / 2.4) * 60);
+	});
+});
+
 describe('parseHitProfile', () => {
 	it('parses "Attack N times over Xs (Y ticks)" into hits/interval (Assault: 4 hits/7 ticks -> interval 2)', () => {
-		expect(parseHitProfile(assault)).toEqual({ kind: 'channel', hits: 4, intervalTicks: 2 });
+		expect(parseHitProfile(assault)).toEqual({
+			kind: 'channel',
+			hits: 4,
+			intervalTicks: 2,
+			isBleed: false
+		});
 	});
 
 	it('parses "per hit every Xs (Y ticks) ... N hits" into hits/interval (Corruption Blast)', () => {
 		expect(parseHitProfile(corruptionBlast)).toEqual({
 			kind: 'channel',
 			hits: 5,
-			intervalTicks: 2
+			intervalTicks: 2,
+			isBleed: false
 		});
 	});
 
@@ -212,6 +291,12 @@ describe('parseHitProfile', () => {
 
 	it('treats an ability with no hit-count language as single (Rend)', () => {
 		expect(parseHitProfile(rend)).toEqual({ kind: 'single' });
+	});
+
+	it('flags Dismember, Slaughter, and Massacre as unconditional bleeds (BLEED_ABILITY_NAMES)', () => {
+		expect(parseHitProfile(dismember)).toMatchObject({ kind: 'channel', isBleed: true });
+		expect(parseHitProfile(slaughter)).toMatchObject({ kind: 'channel', isBleed: true });
+		expect(parseHitProfile(massacre)).toMatchObject({ kind: 'channel', isBleed: true });
 	});
 });
 
@@ -250,6 +335,33 @@ describe('resolveChannels', () => {
 		];
 		const [resolved] = resolveChannels(placements, abilities, 100);
 		expect(resolved.hitTicks).toEqual([0, 2, 4, 6]);
+	});
+
+	it('Dismember (an unconditional bleed) is never interrupted by a later placement', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'a', abilityName: dismember.name, startTick: 0 },
+			{ id: 'b', abilityName: rend.name, startTick: 3 }
+		];
+		const [resolved] = resolveChannels(placements, abilities, 100);
+		// All 8 natural hits (interval 2) land regardless of Rend at tick 3.
+		expect(resolved.hitTicks).toEqual([0, 2, 4, 6, 8, 10, 12, 14]);
+		expect(resolved.barEndTick).toBe(15);
+		expect(resolved.isBleed).toBe(true);
+	});
+
+	it('Slaughter and Massacre are likewise never interrupted', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 's', abilityName: slaughter.name, startTick: 0 },
+			{ id: 'm', abilityName: massacre.name, startTick: 3 },
+			{ id: 'interrupter', abilityName: rend.name, startTick: 6 }
+		];
+		const channels = resolveChannels(placements, abilities, 100);
+		const slaughterChannel = channels.find((c) => c.placementId === 's')!;
+		const massacreChannel = channels.find((c) => c.placementId === 'm')!;
+		expect(slaughterChannel.hitTicks).toEqual([0, 3, 6, 9, 12, 15]);
+		expect(slaughterChannel.isBleed).toBe(true);
+		expect(massacreChannel.hitTicks).toEqual([3, 7, 11, 15, 19, 23, 27]);
+		expect(massacreChannel.isBleed).toBe(true);
 	});
 });
 
@@ -579,6 +691,27 @@ describe('nextOpenTick respects cooldown', () => {
 		const placements: TimelinePlacement[] = [{ id: 'a', abilityName: fury.name, startTick: 0 }];
 		expect(nextOpenTick(rend, placements, abilities, 100)).toBe(3);
 	});
+
+	it('does not wait for a bleed-converted channel to finish -- only its 3-tick GCD block matters', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'a', abilityName: rapidFire.name, startTick: 0 }
+		];
+		// Without the bleed exemption this would be 8 (Rapid Fire's full 8-tick channel), same as
+		// the plain-channel case above -- tagging it as a bleed (Greater Barge's Endless Assault)
+		// means later placements no longer truncate it, so there's nothing left to wait for.
+		expect(nextOpenTick(rend, placements, abilities, 100, new Set(['a']))).toBe(3);
+	});
+
+	it('does not wait for an unconditional bleed (Dismember) to finish -- only its 3-tick GCD block matters', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'a', abilityName: dismember.name, startTick: 0 }
+		];
+		// Dismember's natural hit window runs through tick 14 (8 hits, interval 2), but being an
+		// unconditional bleed (BLEED_ABILITY_NAMES) means it's never interrupted regardless of what
+		// comes after -- so click-to-place has nothing to protect by waiting, same as any ordinary
+		// (non-channelled) ability.
+		expect(nextOpenTick(rend, placements, abilities, 100)).toBe(3);
+	});
 });
 
 describe('packIntoLanes', () => {
@@ -871,7 +1004,9 @@ describe('resolveAspect', () => {
 	const ctx: ModifierContext = {
 		combatStyle: 'ranged',
 		ringOfVigourActive: false,
-		furyOfTheSmallActive: false
+		furyOfTheSmallActive: false,
+		setPieceCounts: {},
+		hasMeleeWeaponEquipped: false
 	};
 	const imbueWindow = [
 		{ placementId: 'x', abilityName: 'Imbue: Shadows', startTick: 0, endTick: 10, extensions: [] }
@@ -954,7 +1089,9 @@ describe('resolveAspect', () => {
 		const meleeCtx: ModifierContext = {
 			combatStyle: 'melee',
 			ringOfVigourActive: false,
-			furyOfTheSmallActive: false
+			furyOfTheSmallActive: false,
+			setPieceCounts: {},
+			hasMeleeWeaponEquipped: false
 		};
 		const result = resolveAspect(
 			[IMBUE_SHADOWS_ADRENALINE_MODIFIER],
@@ -972,7 +1109,9 @@ describe('resolveAspect', () => {
 		const meleeCtx: ModifierContext = {
 			combatStyle: 'melee',
 			ringOfVigourActive: false,
-			furyOfTheSmallActive: false
+			furyOfTheSmallActive: false,
+			setPieceCounts: {},
+			hasMeleeWeaponEquipped: false
 		};
 		const result = resolveAspect(
 			[IMBUE_SHADOWS_ADRENALINE_MODIFIER],
@@ -1003,7 +1142,9 @@ describe('resolveAspect', () => {
 		const activeCtx: ModifierContext = {
 			combatStyle: 'melee',
 			ringOfVigourActive: true,
-			furyOfTheSmallActive: false
+			furyOfTheSmallActive: false,
+			setPieceCounts: {},
+			hasMeleeWeaponEquipped: false
 		};
 		const result = resolveAspect(
 			[RING_OF_VIGOUR_MODIFIER],
@@ -1032,7 +1173,10 @@ describe('resolveAspect', () => {
 			[],
 			{
 				combatStyle: 'melee',
-				ringOfVigourActive: true
+				ringOfVigourActive: true,
+				furyOfTheSmallActive: false,
+				setPieceCounts: {},
+				hasMeleeWeaponEquipped: false
 			},
 			berserk
 		);
@@ -1043,7 +1187,9 @@ describe('resolveAspect', () => {
 		const berserkCtx: ModifierContext = {
 			combatStyle: 'melee',
 			ringOfVigourActive: false,
-			furyOfTheSmallActive: false
+			furyOfTheSmallActive: false,
+			setPieceCounts: {},
+			hasMeleeWeaponEquipped: false
 		};
 		const berserkWindow = [
 			{ placementId: 'b', abilityName: 'Berserk', startTick: 0, endTick: 10, extensions: [] }
@@ -1074,7 +1220,13 @@ describe('resolveAspect', () => {
 			'cap',
 			5,
 			berserkWindow,
-			{ combatStyle: 'melee', ringOfVigourActive: false, furyOfTheSmallActive: false }
+			{
+				combatStyle: 'melee',
+				ringOfVigourActive: false,
+				furyOfTheSmallActive: false,
+				setPieceCounts: {},
+				hasMeleeWeaponEquipped: false
+			}
 		);
 		expect(result.override).toBe(8);
 	});
@@ -1089,7 +1241,13 @@ describe('resolveAspect', () => {
 			'cap',
 			15,
 			berserkWindow,
-			{ combatStyle: 'melee', ringOfVigourActive: false, furyOfTheSmallActive: false }
+			{
+				combatStyle: 'melee',
+				ringOfVigourActive: false,
+				furyOfTheSmallActive: false,
+				setPieceCounts: {},
+				hasMeleeWeaponEquipped: false
+			}
 		);
 		expect(result.override).toBeNull();
 	});
@@ -1163,12 +1321,38 @@ describe('resolveAdrenaline', () => {
 		expect(states[12].value).toBe(75); // 40 + 5*7 (hits 2 through 8)
 	});
 
-	it("applies Imbue: Shadows' per-hit bonus to a spend-type Ultimate alongside Ring of Vigour's flat refund (Deadshot at 60% adrenaline: 60 -> 0 (cost) -> 10 (Ring of Vigour) -> 50 (8 hits * 5))", () => {
+	it("applies Imbue: Shadows' per-hit bonus to a spend-type Ultimate alongside Ring of Vigour's flat refund (Deadshot at 60% adrenaline, no igneous cape: 60 -> 0 (cost) -> 10 (Ring of Vigour) -> 30 (4 hits * 5))", () => {
 		const placements: TimelinePlacement[] = [
 			{ id: 'imbue', abilityName: imbueShadows.name, startTick: 0 }, // -40, target: 'Self'
-			{ id: 'ds', abilityName: deadshot.name, startTick: 5 } // -60, single placement, 8 hits per hitCountFor
+			{ id: 'ds', abilityName: deadshot.name, startTick: 5 } // -60, single placement, 4 hits per hitCountFor without an igneous cape
 		];
 		const states = resolveAdrenaline(placements, abilities, 'ranged', 100, 6, true);
+		expect(states[4].value).toBe(60); // 100 - 40
+		expect(states[5].value).toBe(30); // 60 - 60 (cost, clamped to 0) + 10 (RoV) + 5*4 (Imbue: Shadows)
+	});
+
+	it("credits Imbue: Shadows' bonus for all 8 of Deadshot's hits when Igneous Kal-Xil is equipped", () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'imbue', abilityName: imbueShadows.name, startTick: 0 }, // -40, target: 'Self'
+			{ id: 'ds', abilityName: deadshot.name, startTick: 5 } // -60, single placement, 8 hits with the cape
+		];
+		const gear: GearContext = {
+			isTwoHanded: true,
+			hasOffHandWeapon: false,
+			equippedCapeName: 'Igneous Kal-Xil'
+		};
+		const states = resolveAdrenaline(
+			placements,
+			abilities,
+			'ranged',
+			100,
+			6,
+			true,
+			false,
+			{},
+			false,
+			gear
+		);
 		expect(states[4].value).toBe(60); // 100 - 40
 		expect(states[5].value).toBe(50); // 60 - 60 (cost, clamped to 0) + 10 (RoV) + 5*8 (Imbue: Shadows)
 	});
@@ -1402,5 +1586,1020 @@ describe('resolveBloodlust', () => {
 		];
 		const states = resolveBloodlust(placements, abilities, 3);
 		expect(states.map((s) => s.value)).toEqual([0, 0, 0]);
+	});
+});
+
+describe('isMeleeUltimate', () => {
+	it('is true for a melee Ultimate (Overpower, Berserk)', () => {
+		expect(isMeleeUltimate(overpower)).toBe(true);
+		expect(isMeleeUltimate(berserk)).toBe(true);
+	});
+
+	it('is false for a non-Ultimate melee ability (Rend) and a non-melee Ultimate (Deadshot)', () => {
+		expect(isMeleeUltimate(rend)).toBe(false);
+		expect(isMeleeUltimate(deadshot)).toBe(false);
+	});
+});
+
+describe('resolveHavocBuffs (Vestments of havoc set effect)', () => {
+	const noPieces = {};
+	const twoPieces = { [VESTMENTS_OF_HAVOC_SET_NAME]: 2 };
+
+	it('produces no buff at all with fewer than 2 pieces equipped', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'a', abilityName: overpower.name, startTick: 0 }
+		];
+		const result = resolveHavocBuffs(placements, abilities, 40, noPieces);
+		expect(result.buffs).toEqual([]);
+		expect(result.instantBursts).toEqual([]);
+	});
+
+	it('starts a 30-tick Havoc buff when a melee ultimate is cast with 2+ pieces equipped', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'a', abilityName: overpower.name, startTick: 5 }
+		];
+		const result = resolveHavocBuffs(placements, abilities, 40, twoPieces);
+		expect(result.buffs).toHaveLength(1);
+		expect(result.buffs[0].abilityName).toBe('Havoc');
+		expect(result.buffs[0].startTick).toBe(5);
+		expect(result.buffs[0].endTick).toBe(35);
+		expect(result.instantBursts).toEqual([]);
+	});
+
+	it('does not react to a non-ultimate or non-melee placement', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'a', abilityName: rend.name, startTick: 0 },
+			{ id: 'b', abilityName: deadshot.name, startTick: 5 }
+		];
+		const result = resolveHavocBuffs(placements, abilities, 40, twoPieces);
+		expect(result.buffs).toEqual([]);
+	});
+
+	it('re-triggering a melee ultimate while Havoc is active ends the window early and grants an instant burst instead of stacking a second buff', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'first', abilityName: overpower.name, startTick: 0 },
+			{ id: 'second', abilityName: berserk.name, startTick: 10 } // well within the 30-tick window
+		];
+		const result = resolveHavocBuffs(placements, abilities, 40, twoPieces);
+		expect(result.buffs).toHaveLength(1);
+		expect(result.buffs[0].startTick).toBe(0);
+		expect(result.buffs[0].endTick).toBe(10); // truncated at the re-trigger tick, not 30
+		expect(result.instantBursts).toEqual([
+			{ placementId: 'second', tick: 10, percent: HAVOC_INSTANT_BURST_PERCENT }
+		]);
+	});
+
+	it('a melee ultimate cast AFTER Havoc has naturally expired starts a fresh window, not a burst', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'first', abilityName: overpower.name, startTick: 0 },
+			{ id: 'second', abilityName: berserk.name, startTick: 30 } // exactly at/after endTick
+		];
+		const result = resolveHavocBuffs(placements, abilities, 70, twoPieces);
+		expect(result.buffs).toHaveLength(2);
+		expect(result.buffs[1].startTick).toBe(30);
+		expect(result.instantBursts).toEqual([]);
+	});
+});
+
+describe('applyVestmentsBerserkExtension (3-piece bonus)', () => {
+	it('extends Berserk by 10 ticks with 3+ pieces equipped', () => {
+		const buffs = [
+			{ placementId: 'b', abilityName: 'Berserk', startTick: 0, endTick: 34, extensions: [] }
+		];
+		const extended = applyVestmentsBerserkExtension(
+			buffs,
+			{ [VESTMENTS_OF_HAVOC_SET_NAME]: 3 },
+			100
+		);
+		expect(extended[0].endTick).toBe(44);
+	});
+
+	it('leaves Berserk unchanged with fewer than 3 pieces equipped', () => {
+		const buffs = [
+			{ placementId: 'b', abilityName: 'Berserk', startTick: 0, endTick: 34, extensions: [] }
+		];
+		const extended = applyVestmentsBerserkExtension(
+			buffs,
+			{ [VESTMENTS_OF_HAVOC_SET_NAME]: 2 },
+			100
+		);
+		expect(extended[0].endTick).toBe(34);
+	});
+
+	it('leaves other buffs (e.g. Havoc itself) untouched', () => {
+		const buffs = [
+			{ placementId: 'h', abilityName: 'Havoc', startTick: 0, endTick: 30, extensions: [] }
+		];
+		const extended = applyVestmentsBerserkExtension(
+			buffs,
+			{ [VESTMENTS_OF_HAVOC_SET_NAME]: 4 },
+			100
+		);
+		expect(extended[0].endTick).toBe(30);
+	});
+
+	it('records the extension as an AppliedBuffExtension so it renders like any other extension', () => {
+		const buffs = [
+			{ placementId: 'b', abilityName: 'Berserk', startTick: 5, endTick: 39, extensions: [] }
+		];
+		const extended = applyVestmentsBerserkExtension(
+			buffs,
+			{ [VESTMENTS_OF_HAVOC_SET_NAME]: 3 },
+			100
+		);
+		expect(extended[0].extensions).toEqual([
+			{ tick: 5, extendTicks: 10, sourceAbilityName: 'Vestments of havoc (3pc)' }
+		]);
+	});
+
+	it('clamps the recorded extendTicks when the timeline cuts it off early', () => {
+		const buffs = [
+			{ placementId: 'b', abilityName: 'Berserk', startTick: 0, endTick: 34, extensions: [] }
+		];
+		const extended = applyVestmentsBerserkExtension(
+			buffs,
+			{ [VESTMENTS_OF_HAVOC_SET_NAME]: 3 },
+			38
+		);
+		expect(extended[0].endTick).toBe(38);
+		expect(extended[0].extensions).toEqual([
+			{ tick: 0, extendTicks: 4, sourceAbilityName: 'Vestments of havoc (3pc)' }
+		]);
+	});
+});
+
+describe('resolveAllBuffs', () => {
+	it('merges ordinary buffs with Havoc set-effect buffs into one array', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'berserk', abilityName: berserk.name, startTick: 0 },
+			// Berserk is ALSO a melee ultimate, so it starts its own Havoc window (0-30) --
+			// Overpower's cast at 40 is after that window naturally expired, so it starts a
+			// second, independent Havoc instance rather than re-triggering the first.
+			{ id: 'op', abilityName: overpower.name, startTick: 40 }
+		];
+		const result = resolveAllBuffs(placements, abilities, 100, {
+			[VESTMENTS_OF_HAVOC_SET_NAME]: 4
+		});
+		const names = result.buffs.map((b) => b.abilityName).sort();
+		expect(names).toEqual(['Berserk', 'Havoc', 'Havoc']);
+		// 3pc+4pc means the set is fully equipped -- Berserk's 33-tick base duration should be
+		// extended by 10 (43).
+		const berserkBuff = result.buffs.find((b) => b.abilityName === 'Berserk')!;
+		expect(berserkBuff.endTick).toBe(43);
+		const havocBuffs = result.buffs.filter((b) => b.abilityName === 'Havoc');
+		expect(havocBuffs.map((b) => b.startTick).sort((a, b) => a - b)).toEqual([0, 40]);
+	});
+
+	it('defaults to no set effects when setPieceCounts is omitted', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'berserk', abilityName: berserk.name, startTick: 0 }
+		];
+		const result = resolveAllBuffs(placements, abilities, 40);
+		expect(result.buffs).toHaveLength(1);
+		expect(result.buffs[0].endTick).toBe(33); // unextended
+		expect(result.havocInstantBursts).toEqual([]);
+	});
+});
+
+describe('resolveAdrenaline with Vestments of havoc set effects', () => {
+	const twoPieces = { [VESTMENTS_OF_HAVOC_SET_NAME]: 2 };
+
+	it('regenerates 0.5%/tick for 30 ticks after a melee ultimate while 2+ pieces are equipped', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'op', abilityName: overpower.name, startTick: 0 } // -60, so starts at 40 after cost
+		];
+		const states = resolveAdrenaline(
+			placements,
+			abilities,
+			'melee',
+			100,
+			35,
+			false,
+			false,
+			twoPieces,
+			true
+		);
+		// tick 0: 100 - 60 = 40 (Havoc doesn't start its regen until the tick after activation,
+		// same convention as Meteor Strike's own perTickIncome -- confirmed by the wiki's own
+		// note that timing a re-trigger at exactly 18s only nets 14.5%, not the full 15%, since
+		// the window's own last tick (30, exclusive) never delivers a dose).
+		expect(states[0].value).toBe(40);
+		expect(states[1].value).toBeCloseTo(40.5, 5);
+		expect(states[29].value).toBeCloseTo(40 + 29 * (HAVOC_REGEN_PERCENT / 30), 5); // 54.5
+	});
+
+	it('does not regenerate anything with fewer than 2 pieces equipped', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'op', abilityName: overpower.name, startTick: 0 }
+		];
+		const states = resolveAdrenaline(placements, abilities, 'melee', 100, 35, false, false, {});
+		expect(states[30].value).toBe(40);
+	});
+
+	it('re-triggering a melee ultimate while Havoc is active grants an instant +20% and stops the regen', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'first', abilityName: overpower.name, startTick: 0 }, // 100 -> 40, Havoc starts
+			{ id: 'second', abilityName: berserk.name, startTick: 10 } // -100 spend, then +20 burst
+		];
+		const states = resolveAdrenaline(
+			placements,
+			abilities,
+			'melee',
+			100,
+			40,
+			false,
+			false,
+			twoPieces,
+			true
+		);
+		// Just before the second cast: 40 + 4.5 ticks' worth of regen (ticks 1-9 => 9 * 0.5 = 4.5).
+		expect(states[9].value).toBeCloseTo(44.5, 5);
+		// tick 10: Berserk costs 100 (clamped to 0), then the instant 20% burst lands the same tick.
+		expect(states[10].value).toBe(20);
+		// No further regen afterwards -- the Havoc window ended at the re-trigger.
+		expect(states[20].value).toBe(20);
+	});
+
+	it('raises the adrenaline cap to 120 with 4 pieces equipped and a melee weapon active', () => {
+		const placements: TimelinePlacement[] = [];
+		const states = resolveAdrenaline(
+			placements,
+			abilities,
+			'melee',
+			100,
+			5,
+			false,
+			false,
+			{ [VESTMENTS_OF_HAVOC_SET_NAME]: 4 },
+			true
+		);
+		expect(states.every((s) => s.value === 100)).toBe(true);
+	});
+
+	it('the 4-piece cap raise actually allows exceeding 100', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'op', abilityName: overpower.name, startTick: 0 },
+			{ id: 'berserk', abilityName: berserk.name, startTick: 3 } // re-trigger burst while active
+		];
+		const states = resolveAdrenaline(
+			placements,
+			abilities,
+			'melee',
+			110,
+			10,
+			false,
+			false,
+			{ [VESTMENTS_OF_HAVOC_SET_NAME]: 4 },
+			true
+		);
+		// 110 (starting, only reachable because the cap is already 120) -60 = 50, then a later
+		// instant burst can push back up past 100 without being clamped to the old 100 ceiling.
+		expect(states[0].value).toBe(50);
+		expect(states[0].cap).toBe(VESTMENTS_OF_HAVOC_4PC_ADRENALINE_CAP);
+	});
+
+	it('the cap stays at 100 with 4 pieces equipped but no melee weapon active', () => {
+		const placements: TimelinePlacement[] = [];
+		const states = resolveAdrenaline(
+			placements,
+			abilities,
+			'melee',
+			100,
+			5,
+			false,
+			false,
+			{ [VESTMENTS_OF_HAVOC_SET_NAME]: 4 },
+			false
+		);
+		expect(states[0].cap).toBe(100);
+	});
+});
+
+describe('resolveBloodlust with Vestments of havoc 3-piece Berserk extension', () => {
+	it("extends the window Berserk's Bloodlust cap raise/2x multiplier stay active for", () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'berserk', abilityName: berserk.name, startTick: 0 }, // 33-tick base -> 43 with 3pc
+			{ id: 'a', abilityName: rend.name, startTick: 40 } // +2*2=4 if Berserk's window still active
+		];
+		const withSet = resolveBloodlust(placements, abilities, 45, {
+			[VESTMENTS_OF_HAVOC_SET_NAME]: 3
+		});
+		const withoutSet = resolveBloodlust(placements, abilities, 45, {});
+		// With the 3pc extension, Berserk's window (now ending at 43) still covers tick 40: cap
+		// stays 8 and Rend's 2 stacks double to 4, landing at 4 (Berserk's own) + 4 = 8.
+		expect(withSet[40].value).toBe(8);
+		// Without it, Berserk's window already ended at 33 -- the cap has reverted to the base 4
+		// by tick 40, so Rend's own +2 (unboosted) is clamped straight back down to the cap that
+		// Berserk's initial 4-stack grant already filled.
+		expect(withoutSet[40].value).toBe(4);
+	});
+});
+
+describe('resolveGreaterFuryBuffs', () => {
+	it('starts a 25-tick buff on cast, consumed by the next damaging placement', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'gf', abilityName: greaterFury.name, startTick: 0 },
+			{ id: 'hit', abilityName: rend.name, startTick: 10 }
+		];
+		const { buffs, critPlacementIds } = resolveGreaterFuryBuffs(
+			placements,
+			abilities,
+			GREATER_FURY_DURATION_TICKS + 5,
+			NEUTRAL_GEAR
+		);
+		expect(buffs).toHaveLength(1);
+		expect(buffs[0].abilityName).toBe('Greater Fury');
+		expect(buffs[0].startTick).toBe(0);
+		// Consumed at tick 10, well within its natural 25-tick duration -- ends right there.
+		expect(buffs[0].endTick).toBe(10);
+		expect(critPlacementIds).toEqual(new Set(['hit']));
+	});
+
+	it('is not consumed by a non-damaging placement (e.g. Surge)', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'gf', abilityName: greaterFury.name, startTick: 0 },
+			{ id: 'surge', abilityName: surge.name, startTick: 5 },
+			{ id: 'hit', abilityName: rend.name, startTick: 10 }
+		];
+		const { buffs, critPlacementIds } = resolveGreaterFuryBuffs(
+			placements,
+			abilities,
+			GREATER_FURY_DURATION_TICKS + 5,
+			NEUTRAL_GEAR
+		);
+		expect(buffs[0].endTick).toBe(10);
+		expect(critPlacementIds).toEqual(new Set(['hit']));
+	});
+
+	it('expires naturally after 25 ticks if never consumed', () => {
+		const placements: TimelinePlacement[] = [{ id: 'gf', abilityName: greaterFury.name, startTick: 0 }];
+		const { buffs, critPlacementIds } = resolveGreaterFuryBuffs(
+			placements,
+			abilities,
+			GREATER_FURY_DURATION_TICKS + 5,
+			NEUTRAL_GEAR
+		);
+		expect(buffs[0].endTick).toBe(GREATER_FURY_DURATION_TICKS);
+		expect(critPlacementIds.size).toBe(0);
+	});
+
+	it('does not consume a damaging placement landing after the buff already expired', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'gf', abilityName: greaterFury.name, startTick: 0 },
+			{ id: 'hit', abilityName: rend.name, startTick: GREATER_FURY_DURATION_TICKS + 2 }
+		];
+		const { critPlacementIds } = resolveGreaterFuryBuffs(
+			placements,
+			abilities,
+			GREATER_FURY_DURATION_TICKS + 5,
+			NEUTRAL_GEAR
+		);
+		expect(critPlacementIds.size).toBe(0);
+	});
+});
+
+describe('damageByTick with Greater Fury crit', () => {
+	it('multiplies the consuming placement damage by 1.5x', () => {
+		const placements: TimelinePlacement[] = [{ id: 'hit', abilityName: rend.name, startTick: 0 }];
+		const base = damageByTick(placements, abilities, 10000, NEUTRAL_GEAR, 5);
+		const crit = damageByTick(
+			placements,
+			abilities,
+			10000,
+			NEUTRAL_GEAR,
+			5,
+			new Set(['hit'])
+		);
+		expect(crit[0]).toBe(Math.floor(base[0] * GREATER_FURY_CRIT_MULTIPLIER));
+	});
+});
+
+describe('resolveChaosRoarBuffs', () => {
+	it('starts a 12-tick buff on cast, consumed by the next damaging placement', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'cr', abilityName: chaosRoar.name, startTick: 0 },
+			{ id: 'hit', abilityName: rend.name, startTick: 5 }
+		];
+		const { buffs, bonusPlacementIds } = resolveChaosRoarBuffs(
+			placements,
+			abilities,
+			CHAOS_ROAR_DURATION_TICKS + 5,
+			NEUTRAL_GEAR
+		);
+		expect(buffs).toHaveLength(1);
+		expect(buffs[0].abilityName).toBe('Chaos Roar');
+		expect(buffs[0].startTick).toBe(0);
+		expect(buffs[0].endTick).toBe(5);
+		expect(bonusPlacementIds).toEqual(new Set(['hit']));
+	});
+
+	it('is not consumed by a non-damaging placement (e.g. Surge)', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'cr', abilityName: chaosRoar.name, startTick: 0 },
+			{ id: 'surge', abilityName: surge.name, startTick: 3 },
+			{ id: 'hit', abilityName: rend.name, startTick: 5 }
+		];
+		const { buffs, bonusPlacementIds } = resolveChaosRoarBuffs(
+			placements,
+			abilities,
+			CHAOS_ROAR_DURATION_TICKS + 5,
+			NEUTRAL_GEAR
+		);
+		expect(buffs[0].endTick).toBe(5);
+		expect(bonusPlacementIds).toEqual(new Set(['hit']));
+	});
+
+	it('expires naturally after 12 ticks if never consumed', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'cr', abilityName: chaosRoar.name, startTick: 0 }
+		];
+		const { buffs, bonusPlacementIds } = resolveChaosRoarBuffs(
+			placements,
+			abilities,
+			CHAOS_ROAR_DURATION_TICKS + 5,
+			NEUTRAL_GEAR
+		);
+		expect(buffs[0].endTick).toBe(CHAOS_ROAR_DURATION_TICKS);
+		expect(bonusPlacementIds.size).toBe(0);
+	});
+
+	it('does not consume a damaging placement landing after the buff already expired', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'cr', abilityName: chaosRoar.name, startTick: 0 },
+			{ id: 'hit', abilityName: rend.name, startTick: CHAOS_ROAR_DURATION_TICKS + 2 }
+		];
+		const { bonusPlacementIds } = resolveChaosRoarBuffs(
+			placements,
+			abilities,
+			CHAOS_ROAR_DURATION_TICKS + 5,
+			NEUTRAL_GEAR
+		);
+		expect(bonusPlacementIds.size).toBe(0);
+	});
+});
+
+describe('damageByTick with Chaos Roar bonus', () => {
+	it('multiplies a single-hit ability by 1.75x', () => {
+		const placements: TimelinePlacement[] = [{ id: 'hit', abilityName: rend.name, startTick: 0 }];
+		const base = damageByTick(placements, abilities, 10000, NEUTRAL_GEAR, 5);
+		const boosted = damageByTick(
+			placements,
+			abilities,
+			10000,
+			NEUTRAL_GEAR,
+			5,
+			new Set(),
+			new Set(),
+			new Set(['hit'])
+		);
+		expect(boosted[0]).toBe(Math.floor(base[0] * CHAOS_ROAR_DAMAGE_MULTIPLIER));
+	});
+
+	it('only boosts the FIRST hit of a channelled ability, not every hit', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'assault', abilityName: assault.name, startTick: 0 }
+		];
+		const base = damageByTick(placements, abilities, 5000, NEUTRAL_GEAR, 10);
+		const boosted = damageByTick(
+			placements,
+			abilities,
+			5000,
+			NEUTRAL_GEAR,
+			10,
+			new Set(),
+			new Set(),
+			new Set(['assault'])
+		);
+		const channels = resolveChannels(placements, abilities, 10);
+		const [firstTick, ...restTicks] = channels[0].hitTicks;
+		expect(boosted[firstTick]).toBe(Math.floor(base[firstTick] * CHAOS_ROAR_DAMAGE_MULTIPLIER));
+		for (const tick of restTicks) {
+			expect(boosted[tick]).toBe(base[tick]);
+		}
+	});
+
+	it('boosts ALL hits of a genuine bleed ability (BLEED_ABILITY_NAMES)', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'dismember', abilityName: dismember.name, startTick: 0 }
+		];
+		const base = damageByTick(placements, abilities, 5000, NEUTRAL_GEAR, 20);
+		const boosted = damageByTick(
+			placements,
+			abilities,
+			5000,
+			NEUTRAL_GEAR,
+			20,
+			new Set(),
+			new Set(),
+			new Set(['dismember'])
+		);
+		const channels = resolveChannels(placements, abilities, 20);
+		for (const tick of channels[0].hitTicks) {
+			expect(boosted[tick]).toBe(Math.floor(base[tick] * CHAOS_ROAR_DAMAGE_MULTIPLIER));
+		}
+	});
+
+	it('only boosts the first hit of a Greater-Barge-converted channel, NOT all hits', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'assault', abilityName: assault.name, startTick: 0 }
+		];
+		const bargeBleedIds = new Set(['assault']);
+		const base = damageByTick(
+			placements,
+			abilities,
+			5000,
+			NEUTRAL_GEAR,
+			10,
+			new Set(),
+			bargeBleedIds
+		);
+		const boosted = damageByTick(
+			placements,
+			abilities,
+			5000,
+			NEUTRAL_GEAR,
+			10,
+			new Set(),
+			bargeBleedIds,
+			new Set(['assault'])
+		);
+		const channels = resolveChannels(placements, abilities, 10, bargeBleedIds);
+		expect(channels[0].isBleed).toBe(true); // exempted from interruption, styled as a bleed...
+		const [firstTick, ...restTicks] = channels[0].hitTicks;
+		// ...but still only the first hit gets Chaos Roar's bonus, since it isn't a GENUINE bleed.
+		expect(boosted[firstTick]).toBe(Math.floor(base[firstTick] * CHAOS_ROAR_DAMAGE_MULTIPLIER));
+		for (const tick of restTicks) {
+			expect(boosted[tick]).toBe(base[tick]);
+		}
+	});
+});
+
+describe('damageByTick with Berserk active', () => {
+	it('multiplies a melee ability by 1.75x when its start tick falls within a Berserk window', () => {
+		const placements: TimelinePlacement[] = [{ id: 'hit', abilityName: rend.name, startTick: 5 }];
+		const berserkBuffs = [
+			{ placementId: 'b', abilityName: 'Berserk', startTick: 0, endTick: 33, extensions: [] }
+		];
+		const base = damageByTick(placements, abilities, 10000, NEUTRAL_GEAR, 10);
+		const boosted = damageByTick(
+			placements,
+			abilities,
+			10000,
+			NEUTRAL_GEAR,
+			10,
+			new Set(),
+			new Set(),
+			new Set(),
+			berserkBuffs
+		);
+		expect(boosted[5]).toBe(Math.floor(base[5] * BERSERK_MELEE_DAMAGE_MULTIPLIER));
+	});
+
+	it('does not boost a ranged ability, even while Berserk is active', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'hit', abilityName: rangedBasic.name, startTick: 5 }
+		];
+		const berserkBuffs = [
+			{ placementId: 'b', abilityName: 'Berserk', startTick: 0, endTick: 33, extensions: [] }
+		];
+		const base = damageByTick(placements, abilities, 10000, NEUTRAL_GEAR, 10);
+		const boosted = damageByTick(
+			placements,
+			abilities,
+			10000,
+			NEUTRAL_GEAR,
+			10,
+			new Set(),
+			new Set(),
+			new Set(),
+			berserkBuffs
+		);
+		expect(boosted[5]).toBe(base[5]);
+	});
+
+	it('does not boost a melee ability placed outside the Berserk window', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'hit', abilityName: rend.name, startTick: 40 }
+		];
+		const berserkBuffs = [
+			{ placementId: 'b', abilityName: 'Berserk', startTick: 0, endTick: 33, extensions: [] }
+		];
+		const base = damageByTick(placements, abilities, 10000, NEUTRAL_GEAR, 45);
+		const boosted = damageByTick(
+			placements,
+			abilities,
+			10000,
+			NEUTRAL_GEAR,
+			45,
+			new Set(),
+			new Set(),
+			new Set(),
+			berserkBuffs
+		);
+		expect(boosted[40]).toBe(base[40]);
+	});
+});
+
+describe('damageByTick with hitChanceByStyle', () => {
+	it('scales a matching-style ability by hitChance / 100', () => {
+		const placements: TimelinePlacement[] = [{ id: 'hit', abilityName: rend.name, startTick: 5 }];
+		const base = damageByTick(placements, abilities, 10000, NEUTRAL_GEAR, 10);
+		const scaled = damageByTick(
+			placements,
+			abilities,
+			10000,
+			NEUTRAL_GEAR,
+			10,
+			new Set(),
+			new Set(),
+			new Set(),
+			[],
+			[],
+			[],
+			{ melee: 80 }
+		);
+		expect(scaled[5]).toBe(Math.floor(base[5] * 0.8));
+	});
+
+	it('leaves an ability untouched when its style has no entry in hitChanceByStyle', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'hit', abilityName: rangedBasic.name, startTick: 5 }
+		];
+		const base = damageByTick(placements, abilities, 10000, NEUTRAL_GEAR, 10);
+		const scaled = damageByTick(
+			placements,
+			abilities,
+			10000,
+			NEUTRAL_GEAR,
+			10,
+			new Set(),
+			new Set(),
+			new Set(),
+			[],
+			[],
+			[],
+			{ melee: 80 }
+		);
+		expect(scaled[5]).toBe(base[5]);
+	});
+
+	it('defaults to 100% (no change) when hitChanceByStyle is omitted entirely', () => {
+		const placements: TimelinePlacement[] = [{ id: 'hit', abilityName: rend.name, startTick: 5 }];
+		const base = damageByTick(placements, abilities, 10000, NEUTRAL_GEAR, 10);
+		const withEmptyMap = damageByTick(
+			placements,
+			abilities,
+			10000,
+			NEUTRAL_GEAR,
+			10,
+			new Set(),
+			new Set(),
+			new Set(),
+			[],
+			[],
+			[],
+			{}
+		);
+		expect(withEmptyMap[5]).toBe(base[5]);
+	});
+});
+
+describe('igneous Kal-Zuk (and its style-specific variants) improve ultimate abilities', () => {
+	const withCape = (capeName: string): GearContext => ({
+		isTwoHanded: true,
+		hasOffHandWeapon: false,
+		equippedCapeName: capeName
+	});
+
+	it('Overpower: 1 hit normally, 2 hits with Igneous Kal-Ket or Igneous Kal-Zuk', () => {
+		expect(hitCountFor(overpower, NEUTRAL_GEAR)).toBe(1);
+		expect(hitCountFor(overpower, withCape('Igneous Kal-Ket'))).toBe(2);
+		expect(hitCountFor(overpower, withCape('Igneous Kal-Zuk'))).toBe(2);
+		expect(resolveDamagePercent(overpower, NEUTRAL_GEAR)).toBe('545%');
+		expect(resolveDamagePercent(overpower, withCape('Igneous Kal-Zuk'))).toBe('620%');
+	});
+
+	it('Deadshot: 4 hits normally, 8 hits with Igneous Kal-Xil or Igneous Kal-Zuk', () => {
+		expect(hitCountFor(deadshot, NEUTRAL_GEAR)).toBe(4);
+		expect(hitCountFor(deadshot, withCape('Igneous Kal-Xil'))).toBe(8);
+		expect(hitCountFor(deadshot, withCape('Igneous Kal-Zuk'))).toBe(8);
+		expect(resolveDamagePercent(deadshot, NEUTRAL_GEAR)).toBe('460%');
+		expect(resolveDamagePercent(deadshot, withCape('Igneous Kal-Zuk'))).toBe('520%');
+	});
+
+	it('Omnipower: 1 hit normally, 4 hits with Igneous Kal-Mej or Igneous Kal-Zuk', () => {
+		expect(hitCountFor(omnipower, NEUTRAL_GEAR)).toBe(1);
+		expect(hitCountFor(omnipower, withCape('Igneous Kal-Mej'))).toBe(4);
+		expect(hitCountFor(omnipower, withCape('Igneous Kal-Zuk'))).toBe(4);
+		expect(resolveDamagePercent(omnipower, NEUTRAL_GEAR)).toBe('460%');
+		expect(resolveDamagePercent(omnipower, withCape('Igneous Kal-Zuk'))).toBe('540%');
+	});
+
+	it('Death Skulls: bounces up to 4 times normally, 6 times with Igneous Kal-Mor or Igneous Kal-Zuk', () => {
+		expect(hitCountFor(deathSkulls, NEUTRAL_GEAR)).toBe(4);
+		expect(hitCountFor(deathSkulls, withCape('Igneous Kal-Mor'))).toBe(6);
+		expect(hitCountFor(deathSkulls, withCape('Igneous Kal-Zuk'))).toBe(6);
+		expect(resolveDamagePercent(deathSkulls, NEUTRAL_GEAR)).toBe('250%-750%');
+		expect(resolveDamagePercent(deathSkulls, withCape('Igneous Kal-Zuk'))).toBe('250%-1000%');
+	});
+
+	it('resolveHitCountVariant returns null for abilities with no gear-dependent hit count', () => {
+		expect(resolveHitCountVariant(rend, NEUTRAL_GEAR)).toBeNull();
+	});
+
+	it('an unrelated equipped cape does not trigger the bonus', () => {
+		const gear = withCape('Completionist cape');
+		expect(hitCountFor(deadshot, gear)).toBe(4);
+		expect(resolveDamagePercent(deadshot, gear)).toBe('460%');
+	});
+});
+
+describe('damageByTick with Searing Winds bonus', () => {
+	const searingWindsBuff = (endTick: number) => [
+		{ placementId: 'sw', abilityName: 'Galeshot', startTick: 0, endTick, extensions: [] }
+	];
+
+	it('adds a flat 20% of adTotal bonus to a single-hit Ranged ability while active', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'hit', abilityName: rangedBasic.name, startTick: 5 }
+		];
+		const base = damageByTick(placements, abilities, 10000, NEUTRAL_GEAR, 10);
+		const boosted = damageByTick(
+			placements,
+			abilities,
+			10000,
+			NEUTRAL_GEAR,
+			10,
+			new Set(),
+			new Set(),
+			new Set(),
+			[],
+			searingWindsBuff(9)
+		);
+		expect(boosted[5]).toBe(base[5] + Math.floor(10000 * SEARING_WINDS_BONUS_PERCENT));
+	});
+
+	it('does not boost a non-Ranged ability, even while Searing Winds is active', () => {
+		const placements: TimelinePlacement[] = [{ id: 'hit', abilityName: rend.name, startTick: 5 }];
+		const base = damageByTick(placements, abilities, 10000, NEUTRAL_GEAR, 10);
+		const boosted = damageByTick(
+			placements,
+			abilities,
+			10000,
+			NEUTRAL_GEAR,
+			10,
+			new Set(),
+			new Set(),
+			new Set(),
+			[],
+			searingWindsBuff(9)
+		);
+		expect(boosted[5]).toBe(base[5]);
+	});
+
+	it('does not boost a hit landing after Searing Winds has expired', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'hit', abilityName: rangedBasic.name, startTick: 10 }
+		];
+		const base = damageByTick(placements, abilities, 10000, NEUTRAL_GEAR, 15);
+		const boosted = damageByTick(
+			placements,
+			abilities,
+			10000,
+			NEUTRAL_GEAR,
+			15,
+			new Set(),
+			new Set(),
+			new Set(),
+			[],
+			searingWindsBuff(9)
+		);
+		expect(boosted[10]).toBe(base[10]);
+	});
+
+	it('still fully benefits a hit landing on the exact tick Searing Winds runs out', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'hit', abilityName: rangedBasic.name, startTick: 9 }
+		];
+		const base = damageByTick(placements, abilities, 10000, NEUTRAL_GEAR, 12);
+		const boosted = damageByTick(
+			placements,
+			abilities,
+			10000,
+			NEUTRAL_GEAR,
+			12,
+			new Set(),
+			new Set(),
+			new Set(),
+			[],
+			searingWindsBuff(9)
+		);
+		expect(boosted[9]).toBe(base[9] + Math.floor(10000 * SEARING_WINDS_BONUS_PERCENT));
+	});
+
+	it('credits the bonus once per landed hit of a channelled ability (Rapid Fire, 8 hits)', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'rf', abilityName: rapidFire.name, startTick: 0 }
+		];
+		const base = damageByTick(placements, abilities, 10000, NEUTRAL_GEAR, 20);
+		const boosted = damageByTick(
+			placements,
+			abilities,
+			10000,
+			NEUTRAL_GEAR,
+			20,
+			new Set(),
+			new Set(),
+			new Set(),
+			[],
+			searingWindsBuff(20)
+		);
+		const channels = resolveChannels(placements, abilities, 20);
+		const bonusPerHit = Math.floor(10000 * SEARING_WINDS_BONUS_PERCENT);
+		for (const tick of channels[0].hitTicks) {
+			expect(boosted[tick]).toBe(base[tick] + bonusPerHit);
+		}
+	});
+
+	it('credits the bonus once per simultaneous hit of a gear-dependent multi-hit ability (Deadshot, 8 hits with Igneous Kal-Xil)', () => {
+		const gear: GearContext = {
+			isTwoHanded: true,
+			hasOffHandWeapon: false,
+			equippedCapeName: 'Igneous Kal-Xil'
+		};
+		const placements: TimelinePlacement[] = [
+			{ id: 'ds', abilityName: deadshot.name, startTick: 5 }
+		];
+		const base = damageByTick(placements, abilities, 10000, gear, 10);
+		const boosted = damageByTick(
+			placements,
+			abilities,
+			10000,
+			gear,
+			10,
+			new Set(),
+			new Set(),
+			new Set(),
+			[],
+			searingWindsBuff(9)
+		);
+		const bonusPerHit = Math.floor(10000 * SEARING_WINDS_BONUS_PERCENT);
+		expect(boosted[5]).toBe(base[5] + bonusPerHit * hitCountFor(deadshot, gear));
+	});
+});
+
+describe("damageByTick splits a 'single'-profile multi-hit ability's damage per-hit, capped independently", () => {
+	it('Ricochet (3 hits) caps each hit at MAX_DAMAGE_PER_HIT independently, not the whole total', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'ricochet', abilityName: ricochet.name, startTick: 0 }
+		];
+		const result = damageByTick(placements, abilities, 1_000_000, NEUTRAL_GEAR, 5);
+		const perHitDamage = Math.floor(
+			abilityDamageForPlacement(ricochet, 1_000_000, NEUTRAL_GEAR) / hitCountFor(ricochet, NEUTRAL_GEAR)
+		);
+		expect(perHitDamage).toBeGreaterThan(MAX_DAMAGE_PER_HIT);
+		expect(result[0]).toBe(MAX_DAMAGE_PER_HIT * hitCountFor(ricochet, NEUTRAL_GEAR));
+	});
+
+	it("a genuinely single-hit ability's damage is unaffected by the per-hit split (hitCount 1)", () => {
+		const placements: TimelinePlacement[] = [{ id: 'hit', abilityName: rend.name, startTick: 0 }];
+		const result = damageByTick(placements, abilities, 10000, NEUTRAL_GEAR, 5);
+		expect(result[0]).toBe(
+			Math.min(abilityDamageForPlacement(rend, 10000, NEUTRAL_GEAR), MAX_DAMAGE_PER_HIT)
+		);
+	});
+});
+
+describe('MAX_DAMAGE_PER_HIT cap', () => {
+	it('caps a single-hit ability at 30,000 even with a huge AD total', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'op', abilityName: overpower.name, startTick: 0 }
+		];
+		const result = damageByTick(placements, abilities, 1_000_000, NEUTRAL_GEAR, 5);
+		expect(result[0]).toBe(MAX_DAMAGE_PER_HIT);
+	});
+
+	it('caps each individual hit of a channelled ability independently', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'assault', abilityName: assault.name, startTick: 0 }
+		];
+		const result = damageByTick(placements, abilities, 1_000_000, NEUTRAL_GEAR, 10);
+		const channels = resolveChannels(placements, abilities, 10);
+		for (const tick of channels[0].hitTicks) {
+			expect(result[tick]).toBe(MAX_DAMAGE_PER_HIT);
+		}
+	});
+
+	it('leaves ordinary damage well under the cap unaffected', () => {
+		const placements: TimelinePlacement[] = [{ id: 'hit', abilityName: rend.name, startTick: 0 }];
+		const result = damageByTick(placements, abilities, 1000, NEUTRAL_GEAR, 5);
+		expect(result[0]).toBeLessThan(MAX_DAMAGE_PER_HIT);
+		expect(result[0]).toBeGreaterThan(0);
+	});
+
+	it('a crit that would exceed the cap is still clamped down to it', () => {
+		const placements: TimelinePlacement[] = [{ id: 'hit', abilityName: rend.name, startTick: 0 }];
+		const result = damageByTick(
+			placements,
+			abilities,
+			1_000_000,
+			NEUTRAL_GEAR,
+			5,
+			new Set(['hit'])
+		);
+		expect(result[0]).toBe(MAX_DAMAGE_PER_HIT);
+	});
+});
+
+describe('resolveEndlessAssaultBleeds', () => {
+	it('grants Endless Assault when Greater Barge is the very first placement (nothing prior)', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'barge', abilityName: greaterBarge.name, startTick: 0 }
+		];
+		const { buffs } = resolveEndlessAssaultBleeds(placements, abilities, 15, NEUTRAL_GEAR);
+		expect(buffs).toHaveLength(1);
+		expect(buffs[0].abilityName).toBe('Endless Assault');
+		expect(buffs[0].startTick).toBe(0);
+		expect(buffs[0].endTick).toBe(GREATER_BARGE_BLEED_WINDOW_TICKS);
+	});
+
+	it('grants Endless Assault when 8+ ticks have passed since the last damaging ability', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'hit', abilityName: rend.name, startTick: 0 },
+			{ id: 'barge', abilityName: greaterBarge.name, startTick: GREATER_BARGE_OUT_OF_COMBAT_TICKS }
+		];
+		const { buffs } = resolveEndlessAssaultBleeds(placements, abilities, 30, NEUTRAL_GEAR);
+		expect(buffs).toHaveLength(1);
+	});
+
+	it('withholds Endless Assault when fewer than 8 ticks have passed since a damaging ability', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'hit', abilityName: rend.name, startTick: 0 },
+			{
+				id: 'barge',
+				abilityName: greaterBarge.name,
+				startTick: GREATER_BARGE_OUT_OF_COMBAT_TICKS - 1
+			}
+		];
+		const { buffs } = resolveEndlessAssaultBleeds(placements, abilities, 30, NEUTRAL_GEAR);
+		expect(buffs).toHaveLength(0);
+	});
+
+	it('a non-damaging ability (e.g. Berserk) does not reset the out-of-combat timer', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'hit', abilityName: rend.name, startTick: 0 },
+			{ id: 'zerk', abilityName: berserk.name, startTick: 3 },
+			{ id: 'barge', abilityName: greaterBarge.name, startTick: GREATER_BARGE_OUT_OF_COMBAT_TICKS }
+		];
+		const { buffs } = resolveEndlessAssaultBleeds(placements, abilities, 30, NEUTRAL_GEAR);
+		// Still measured from Rend (tick 0), not Berserk (tick 3) -- Berserk deals no damage itself.
+		expect(buffs).toHaveLength(1);
+	});
+
+	it('converts the next melee channelled ability into a bypass-interruption bleed', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'barge', abilityName: greaterBarge.name, startTick: 0 },
+			{ id: 'channel', abilityName: assault.name, startTick: 2 },
+			// Placed mid-channel -- would normally truncate Assault's remaining hits.
+			{ id: 'interrupter', abilityName: rend.name, startTick: 5 }
+		];
+		const { bleedPlacementIds } = resolveEndlessAssaultBleeds(placements, abilities, 15, NEUTRAL_GEAR);
+		expect(bleedPlacementIds).toEqual(new Set(['channel']));
+
+		const channels = resolveChannels(placements, abilities, 15, bleedPlacementIds);
+		const assaultChannel = channels.find((c) => c.placementId === 'channel')!;
+		// All 4 natural hits land (2, 4, 6, 8) despite Rend being placed at tick 5.
+		expect(assaultChannel.hitTicks).toEqual([2, 4, 6, 8]);
+		expect(assaultChannel.isBleed).toBe(true);
+	});
+
+	it('does not treat a single-hit ability as consuming the Endless Assault window', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'barge', abilityName: greaterBarge.name, startTick: 0 },
+			{ id: 'hit', abilityName: rend.name, startTick: 2 },
+			{ id: 'channel', abilityName: assault.name, startTick: 5 }
+		];
+		const { buffs, bleedPlacementIds } = resolveEndlessAssaultBleeds(
+			placements,
+			abilities,
+			20,
+			NEUTRAL_GEAR
+		);
+		// Rend (single-hit) doesn't consume the window -- Assault at tick 5 (still within the
+		// 10-tick window) is the one that does.
+		expect(bleedPlacementIds).toEqual(new Set(['channel']));
+		expect(buffs[0].endTick).toBe(5);
+	});
+});
+
+describe('resolveChannels with bleedPlacementIds', () => {
+	it('an ordinary (non-bleed) channel is still truncated by a later placement as before', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'channel', abilityName: assault.name, startTick: 0 },
+			{ id: 'interrupter', abilityName: rend.name, startTick: 3 }
+		];
+		const channels = resolveChannels(placements, abilities, 15);
+		expect(channels[0].hitTicks).toEqual([0, 2]);
+		expect(channels[0].isBleed).toBe(false);
 	});
 });

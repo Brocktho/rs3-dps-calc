@@ -80,13 +80,20 @@ def extract_infobox_monster(wikitext: str) -> dict | None:
 
     # Collapse versioned fields (fieldN) down to the field's version-1 value, preferring an
     # explicit "1"-suffixed field over the bare field name when both exist (some fields are
-    # only versioned for a subset of bosses).
+    # only versioned for a subset of bosses). When a field has fieldN variants (N>=2) but no
+    # explicit field1, the bare field name IS the version-1 value (e.g. Spiritual mage has
+    # armour/armour5 but no armour1 -- armour=1486 is version 1's own value, not a value to
+    # discard). Confirmed via a live bug where such fields (armour, defence, level, lifepoints,
+    # max_magic, acc_magic on Spiritual mage/ranger/warrior) were silently dropped entirely.
     fields: dict[str, str] = {}
     versioned_bases = set()
+    has_explicit_v1 = set()
     for key in raw_fields:
         m = re.match(r'^(.*?)(\d+)$', key)
         if m and m.group(1):
             versioned_bases.add(m.group(1))
+            if m.group(2) == '1':
+                has_explicit_v1.add(m.group(1))
 
     for key, value in raw_fields.items():
         m = re.match(r'^(.*?)(\d+)$', key)
@@ -95,8 +102,8 @@ def extract_infobox_monster(wikitext: str) -> dict | None:
             if num == '1':
                 fields[base] = value
         else:
-            if key not in versioned_bases:
-                fields[key] = value
+            if key not in versioned_bases or key not in has_explicit_v1:
+                fields.setdefault(key, value)
 
     return fields
 

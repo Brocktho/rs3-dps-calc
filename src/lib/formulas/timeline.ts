@@ -53,19 +53,19 @@ export function parseDamageMultiplier(raw: string | null): number | null {
 }
 
 /**
- * Picks the right damageVariants entry for the player's current gear. Matches two-handed/
- * dual-wield/main-hand-only wording against the weapon config, and named igneous-cape variants
- * against the equipped cape; otherwise falls back to the "Any" key (or the first key if no "Any"
- * exists). Variants gated on a full equipment *set* (e.g. "4+ pieces of Tumeken's resplendence
- * equipment") are left on their fallback value -- this app has no "equipped set" concept anywhere
- * else either, so resolving those precisely is out of scope for now (same kind of documented
- * simplification as the unverified Magic styleTier value elsewhere in this codebase).
+ * Picks the right entry of a damageVariants/hitCountVariants-shaped dictionary for the player's
+ * current gear. Matches two-handed/dual-wield/main-hand-only wording against the weapon config,
+ * and named igneous-cape variants against the equipped cape; otherwise falls back to the "Any" key
+ * (or the first key if no "Any" exists). Variants gated on a full equipment *set* (e.g. "4+ pieces
+ * of Tumeken's resplendence equipment") are left on their fallback value -- this app has no
+ * "equipped set" concept anywhere else either, so resolving those precisely is out of scope for
+ * now (same kind of documented simplification as the unverified Magic styleTier value elsewhere in
+ * this codebase). Shared by resolveDamagePercent and resolveHitCountVariant so the two stay
+ * consistent -- an ability's igneous cape damage bump and hit-count bump are always keyed by the
+ * exact same gear match.
  */
-export function resolveDamagePercent(ability: Ability, gear: GearContext): string | null {
-	if (ability.damagePercent !== null) return ability.damagePercent;
-	if (!ability.damageVariants) return null;
-
-	const entries = Object.entries(ability.damageVariants);
+function resolveGearVariant<T>(variants: Record<string, T>, gear: GearContext): T {
+	const entries = Object.entries(variants);
 	if (entries.length === 1) return entries[0][1];
 
 	for (const [key, value] of entries) {
@@ -90,6 +90,21 @@ export function resolveDamagePercent(ability: Ability, gear: GearContext): strin
 	return (anyEntry ?? entries[0])[1];
 }
 
+/** Picks the right damageVariants entry for the player's current gear -- see resolveGearVariant. */
+export function resolveDamagePercent(ability: Ability, gear: GearContext): string | null {
+	if (ability.damagePercent !== null) return ability.damagePercent;
+	if (!ability.damageVariants) return null;
+	return resolveGearVariant(ability.damageVariants, gear);
+}
+
+/** Picks the right hitCountVariants entry for the player's current gear (e.g. Deadshot: 4 hits
+ *  normally, 8 with Igneous Kal-Xil/Kal-Zuk) -- see resolveGearVariant. null if the ability has no
+ *  gear-dependent hit count. */
+export function resolveHitCountVariant(ability: Ability, gear: GearContext): number | null {
+	if (!ability.hitCountVariants) return null;
+	return resolveGearVariant(ability.hitCountVariants, gear);
+}
+
 /** Computes the damage a single placed ability deals, given the player's current total Ability
  *  Damage (AD) figure and gear (for damageVariants resolution). */
 export function abilityDamageForPlacement(
@@ -102,6 +117,16 @@ export function abilityDamageForPlacement(
 	return multiplier === null ? 0 : Math.floor(adTotal * multiplier);
 }
 
+/** Whether `ability` actually deals damage at all, for gating effects like Greater Fury's
+ *  crit-consumption or Greater Barge's out-of-combat timer -- NOT simply
+ *  `resolveDamagePercent(...) !== null`, since a non-damaging ability's damagePercent is often the
+ *  literal string `'N/A'` rather than `null` (e.g. Surge) -- `parseDamageMultiplier` is what
+ *  actually recognizes that as "no damage", same check `abilityDamageForPlacement` already relies
+ *  on to zero those out. */
+export function abilityDealsDamage(ability: Ability, gear: GearContext): boolean {
+	return parseDamageMultiplier(resolveDamagePercent(ability, gear)) !== null;
+}
+
 export function placementAbility(
 	placement: TimelinePlacement,
 	abilities: Ability[]
@@ -110,11 +135,26 @@ export function placementAbility(
 }
 
 /**
+ * Hand-curated set of abilities whose multi-hit damage is a genuine bleed/damage-over-time effect
+ * rather than an interruptible channel -- e.g. Dismember, Slaughter, Massacre. Unlike a channel
+ * (Assault, Rapid Fire, ...), placing another ability afterward does NOT cut a bleed short; it
+ * always deals its full damage over its full natural duration regardless of what's placed after it
+ * -- the same non-interruptible behavior Greater Barge's Endless Assault conversion grants a
+ * channelled ability (see resolveEndlessAssaultBleeds), except these abilities are bleeds
+ * unconditionally, with no Greater Barge or any other trigger needed. Same curation pattern as
+ * CONDITIONAL_COOLDOWNS/HIT_COUNT_OVERRIDES: named by the user directly rather than parsed from
+ * description text, so add more entries here as they come up.
+ */
+export const BLEED_ABILITY_NAMES: ReadonlySet<string> = new Set(['Dismember', 'Slaughter', 'Massacre']);
+
+/**
  * How many times a placed ability actually hits, and when:
  * - 'single': one hit, on the start tick (the default -- most abilities, and also abilities whose
  *   description mentions a bare "N hits" with no timing, e.g. Adaptive Strike -- see note below).
  * - 'channel': N hits spread over time at a fixed interval, e.g. Assault ("Attack 4 times over
- *   4.2s (7 ticks)" -> hits at 0/2/4/6).
+ *   4.2s (7 ticks)" -> hits at 0/2/4/6). `isBleed` is true for BLEED_ABILITY_NAMES entries --
+ *   these are never truncated by a later placement (see resolveChannels), unlike an ordinary
+ *   channel.
  *
  * Important: `Ability.damagePercent`/`damageVariants` is already the ability's TOTAL damage
  * summed across all its hits, not a per-hit value -- verified against 5 multi-hit abilities'
@@ -126,7 +166,8 @@ export function placementAbility(
  * proportionally if the channel gets interrupted -- see resolveChannels).
  */
 export type HitProfile =
-	{ kind: 'single' } | { kind: 'channel'; hits: number; intervalTicks: number };
+	| { kind: 'single' }
+	| { kind: 'channel'; hits: number; intervalTicks: number; isBleed: boolean };
 
 /**
  * Parses the ability's channel/DoT hit timing from its description text. Two phrasings appear in
@@ -136,6 +177,8 @@ export type HitProfile =
  * Everything else (including a bare "N hits." with no timing, e.g. Adaptive Strike) is 'single'.
  */
 export function parseHitProfile(ability: Ability): HitProfile {
+	const isBleed = BLEED_ABILITY_NAMES.has(ability.name);
+
 	const windowMatch = ability.description.match(
 		/attack (\d+) times over [\d.]+s \((\d+) ticks?\)/i
 	);
@@ -144,7 +187,7 @@ export function parseHitProfile(ability: Ability): HitProfile {
 		const windowTicks = Number(windowMatch[2]);
 		if (hits > 1) {
 			const intervalTicks = Math.round((windowTicks - 1) / (hits - 1));
-			return { kind: 'channel', hits, intervalTicks };
+			return { kind: 'channel', hits, intervalTicks, isBleed };
 		}
 	}
 
@@ -153,7 +196,7 @@ export function parseHitProfile(ability: Ability): HitProfile {
 	if (everyMatch && hitsMatch) {
 		const intervalTicks = Number(everyMatch[1]);
 		const hits = Number(hitsMatch[1]);
-		if (hits > 1) return { kind: 'channel', hits, intervalTicks };
+		if (hits > 1) return { kind: 'channel', hits, intervalTicks, isBleed };
 	}
 
 	return { kind: 'single' };
@@ -196,6 +239,11 @@ export interface ResolvedChannel {
 	/** Exclusive end tick for rendering the channel's box -- either its natural completion or the
 	 *  tick of the ability that interrupted it, whichever is earlier. */
 	barEndTick: number;
+	/** True for an unconditional bleed ability (BLEED_ABILITY_NAMES, e.g. Dismember/Slaughter/
+	 *  Massacre) OR a channel Greater Barge's Endless Assault converted into one (see
+	 *  resolveEndlessAssaultBleeds) -- purely descriptive for the UI (different styling/label);
+	 *  the actual bypass of interruption for both cases happens below, inside this function. */
+	isBleed: boolean;
 }
 
 /**
@@ -207,11 +255,20 @@ export interface ResolvedChannel {
  * stays the normal 3 ticks regardless -- interruption only affects how much of ITS damage lands,
  * never where other abilities can be placed (that's still just `canPlaceAbility`/GCD collision).
  * Off-GCD placements never interrupt a channel.
+ *
+ * Two independent ways a placement is exempted from that interruption entirely, always dealing its
+ * full natural damage over its full natural duration regardless of what's placed after it:
+ *   1. `parseHitProfile(ability).isBleed` -- an unconditional bleed (BLEED_ABILITY_NAMES), true
+ *      for every placement of that ability regardless of context.
+ *   2. `bleedPlacementIds` -- Greater Barge's Endless Assault conversion (see
+ *      resolveEndlessAssaultBleeds), which applies only to the ONE specific placement that
+ *      consumed the buff, not every placement of that ability.
  */
 export function resolveChannels(
 	placements: TimelinePlacement[],
 	abilities: Ability[],
-	timelineLength: number
+	timelineLength: number,
+	bleedPlacementIds: ReadonlySet<string> = new Set()
 ): ResolvedChannel[] {
 	const gcdPlacements = placements
 		.filter((p) => {
@@ -232,8 +289,9 @@ export function resolveChannels(
 			(_, i) => placement.startTick + i * profile.intervalTicks
 		).filter((t) => t < timelineLength);
 
+		const isBleed = profile.isBleed || bleedPlacementIds.has(placement.id);
 		const nextGcd = gcdPlacements.find((p) => p.startTick > placement.startTick);
-		const cutoffTick = nextGcd ? nextGcd.startTick : Infinity;
+		const cutoffTick = isBleed ? Infinity : (nextGcd?.startTick ?? Infinity);
 
 		const hitTicks = naturalHitTicks.filter((t) => t < cutoffTick);
 		const naturalEnd = naturalHitTicks[naturalHitTicks.length - 1] + 1;
@@ -244,7 +302,8 @@ export function resolveChannels(
 			abilityName: placement.abilityName,
 			startTick: placement.startTick,
 			hitTicks,
-			barEndTick
+			barEndTick,
+			isBleed
 		});
 	}
 	return result;
@@ -466,6 +525,381 @@ export function resolveBuffs(
 	}
 
 	return result;
+}
+
+export const VESTMENTS_OF_HAVOC_SET_NAME = 'Vestments of havoc armour';
+export const HAVOC_BUFF_NAME = 'Havoc';
+export const HAVOC_DURATION_TICKS = 30; // 18s
+export const HAVOC_REGEN_PERCENT = 15;
+export const HAVOC_INSTANT_BURST_PERCENT = 20;
+
+/** True for a melee Ultimate ability -- the trigger condition for the Vestments of havoc set's
+ *  "Herald of Chaos" 2-piece bonus (any melee ultimate, not one specific named ability, unlike
+ *  every other buff this app models). */
+export function isMeleeUltimate(ability: Ability): boolean {
+	return ability.style === 'melee' && ability.type === 'Ultimate';
+}
+
+/** One instant adrenaline burst produced by re-triggering Havoc while it's already active (see
+ *  resolveHavocBuffs) -- consumed by resolveAdrenaline via costRefundForPlacement, keyed on the
+ *  exact placement that caused the re-trigger (not just its tick, since that's the only way to
+ *  disambiguate this specific melee-ultimate cast from any other placement that happens to share
+ *  its tick). */
+export interface HavocInstantBurst {
+	placementId: string;
+	tick: number;
+	percent: number;
+}
+
+export interface HavocResolution {
+	buffs: ResolvedBuff[];
+	instantBursts: HavocInstantBurst[];
+}
+
+/**
+ * Resolves the Vestments of havoc set's "Herald of Chaos" 2-piece bonus: casting a melee ultimate
+ * while at least 2 pieces are worn starts an 18s (30-tick) "Havoc" buff granting 15% adrenaline
+ * regenerated evenly over its duration. Casting ANOTHER qualifying ultimate while Havoc is already
+ * active does NOT start a second window or extend the first -- per the wiki ("If this effect is
+ * already active, instead regenerate 20% adrenaline instantly, ending the regeneration effect"),
+ * it immediately grants a flat 20% adrenaline burst and ends the buff early, right there. This is
+ * a genuinely different shape from every other buff in this file (resolveBuffs): it's triggered by
+ * an ability CATEGORY (any melee ultimate) rather than one specific named ability, and its own
+ * re-trigger behavior depends on whether an instance is already running -- so it's resolved
+ * separately here rather than folded into parseBuffInfo/resolveBuffs, then merged into the same
+ * ResolvedBuff[] shape those consume (packIntoLanes, the Timeline buff lane, etc. all work
+ * unchanged since they only care about {startTick, endTick, abilityName, placementId}).
+ */
+export function resolveHavocBuffs(
+	placements: TimelinePlacement[],
+	abilities: Ability[],
+	timelineLength: number,
+	setPieceCounts: Record<string, number>
+): HavocResolution {
+	const buffs: ResolvedBuff[] = [];
+	const instantBursts: HavocInstantBurst[] = [];
+
+	if ((setPieceCounts[VESTMENTS_OF_HAVOC_SET_NAME] ?? 0) < 2) {
+		return { buffs, instantBursts };
+	}
+
+	const triggers = placements
+		.filter((p) => {
+			const ability = placementAbility(p, abilities);
+			return ability && isMeleeUltimate(ability);
+		})
+		.sort((a, b) => a.startTick - b.startTick);
+
+	let active: ResolvedBuff | null = null;
+	let instanceCounter = 0;
+	for (const placement of triggers) {
+		if (active && placement.startTick < active.endTick) {
+			// Re-triggered while still active: instant burst, ends the window right here instead
+			// of extending or stacking a second one.
+			active.endTick = placement.startTick;
+			instantBursts.push({
+				placementId: placement.id,
+				tick: placement.startTick,
+				percent: HAVOC_INSTANT_BURST_PERCENT
+			});
+			active = null;
+			continue;
+		}
+		instanceCounter++;
+		active = {
+			placementId: `havoc-${instanceCounter}`,
+			abilityName: HAVOC_BUFF_NAME,
+			startTick: placement.startTick,
+			endTick: Math.min(placement.startTick + HAVOC_DURATION_TICKS, timelineLength),
+			extensions: []
+		};
+		buffs.push(active);
+	}
+
+	return { buffs, instantBursts };
+}
+
+export const VESTMENTS_OF_HAVOC_3PC_BERSERK_EXTEND_TICKS = 10; // +6s, 20.4s -> 26.4s
+
+/**
+ * Applies Vestments of havoc's 3-piece bonus directly to an already-resolved Berserk buff: "+6
+ * seconds" (10 ticks) to its duration, straight onto its endTick. Unlike every other duration
+ * extension in this file (parseBuffExtension/resolveBuffs), this one isn't triggered by casting
+ * some OTHER ability -- it's an unconditional property of Berserk itself while 3+ pieces are worn.
+ * Still recorded as a proper `AppliedBuffExtension` (source "Vestments of havoc (3pc)"), same as
+ * any other extension, so it renders identically on the buff bar (groupBuffExtensions/Timeline.svelte)
+ * instead of just silently widening the bar with no visible cause. Mutates nothing -- returns a new
+ * array with Berserk's entries adjusted.
+ */
+export function applyVestmentsBerserkExtension(
+	buffs: ResolvedBuff[],
+	setPieceCounts: Record<string, number>,
+	timelineLength: number
+): ResolvedBuff[] {
+	if ((setPieceCounts[VESTMENTS_OF_HAVOC_SET_NAME] ?? 0) < 3) return buffs;
+	return buffs.map((buff) => {
+		if (buff.abilityName !== 'Berserk') return buff;
+		const extendTicks = Math.min(
+			VESTMENTS_OF_HAVOC_3PC_BERSERK_EXTEND_TICKS,
+			timelineLength - buff.endTick
+		);
+		if (extendTicks <= 0) return buff;
+		return {
+			...buff,
+			endTick: buff.endTick + extendTicks,
+			extensions: [
+				...buff.extensions,
+				{
+					tick: buff.startTick,
+					extendTicks,
+					sourceAbilityName: 'Vestments of havoc (3pc)'
+				}
+			]
+		};
+	});
+}
+
+export const GREATER_FURY_BUFF_NAME = 'Greater Fury';
+export const GREATER_FURY_DURATION_TICKS = 25; // 15s
+export const GREATER_FURY_CRIT_MULTIPLIER = 1.5;
+
+/**
+ * Resolves Greater Fury's own status effect: casting it starts a "Greater Fury" buff lasting 25
+ * ticks (15s), consumed by the next damage-dealing Melee ability the player uses (per the wiki:
+ * "Removed after dealing a critical strike" -- since this app has no crit-chance model, the
+ * simplification is that the very next damaging ability always consumes it and always crits, per
+ * the user's direction). A non-damaging placement (a self-buff, a bare positioning move, etc.)
+ * neither consumes nor is boosted by it -- only placements `abilityDealsDamage` recognizes as
+ * actually dealing damage count.
+ * Re-casting Greater Fury while a previous instance is still unconsumed simply starts a fresh
+ * 25-tick window from that later cast (replacing the old one, same as any other self-buff
+ * re-cast in this app -- there's no stacking concept for it).
+ *
+ * Returns both the synthetic buff windows (for the same buff lane/rendering every other buff
+ * uses) and the set of placement ids that actually consumed one -- the latter drives
+ * `damageByTick`'s crit multiplier, since only that ONE specific placement (not every damaging
+ * ability while the buff happens to be up) gets boosted.
+ */
+export function resolveGreaterFuryBuffs(
+	placements: TimelinePlacement[],
+	abilities: Ability[],
+	timelineLength: number,
+	gear: GearContext
+): { buffs: ResolvedBuff[]; critPlacementIds: Set<string> } {
+	const buffs: ResolvedBuff[] = [];
+	const critPlacementIds = new Set<string>();
+
+	const sorted = [...placements].sort((a, b) => a.startTick - b.startTick);
+
+	let active: ResolvedBuff | null = null;
+	let instanceCounter = 0;
+	for (const placement of sorted) {
+		const ability = placementAbility(placement, abilities);
+		if (!ability) continue;
+
+		if (active && placement.startTick < active.endTick) {
+			if (abilityDealsDamage(ability, gear)) {
+				critPlacementIds.add(placement.id);
+				active.endTick = placement.startTick;
+				active = null;
+				continue;
+			}
+		}
+
+		if (ability.name === GREATER_FURY_BUFF_NAME) {
+			instanceCounter++;
+			active = {
+				placementId: `greater-fury-${instanceCounter}`,
+				abilityName: GREATER_FURY_BUFF_NAME,
+				startTick: placement.startTick,
+				endTick: Math.min(placement.startTick + GREATER_FURY_DURATION_TICKS, timelineLength),
+				extensions: []
+			};
+			buffs.push(active);
+		}
+	}
+
+	return { buffs, critPlacementIds };
+}
+
+export const GREATER_BARGE_BLEED_WINDOW_TICKS = 10; // 6s Endless Assault window
+export const GREATER_BARGE_OUT_OF_COMBAT_TICKS = 8; // 4.8s since last damaging ability
+
+/**
+ * Resolves Greater Barge's "Endless Assault" conversion: casting Greater Barge grants a buff for
+ * 10 ticks (6s) whose window is spent the moment the player's next melee CHANNELLED ability is
+ * cast -- that placement is dealt as damage over time instead of a normal channel (i.e. it isn't
+ * interrupted by whatever gets placed after it, per resolveChannels' `bleedPlacementIds`), rather
+ * than losing its remaining hits the way an ordinary channel would.
+ *
+ * Per the wiki, Endless Assault is only granted at all if Greater Barge itself was cast while the
+ * player had been out of combat with their target for at least 4.8s (8 ticks) -- modeled here as
+ * "at least 8 ticks since the last damage-dealing ability" (per the user's direction: Berserk and
+ * other non-damaging/defensive abilities don't reset this, only an actual damaging cast does,
+ * e.g. Fury). The very first Greater Barge on an empty timeline always qualifies (nothing came
+ * before it to be "in combat" with).
+ */
+export function resolveEndlessAssaultBleeds(
+	placements: TimelinePlacement[],
+	abilities: Ability[],
+	timelineLength: number,
+	gear: GearContext
+): { buffs: ResolvedBuff[]; bleedPlacementIds: Set<string> } {
+	const buffs: ResolvedBuff[] = [];
+	const bleedPlacementIds = new Set<string>();
+
+	const sorted = [...placements].sort((a, b) => a.startTick - b.startTick);
+	const damagingTicks = sorted
+		.map((p) => {
+			const ability = placementAbility(p, abilities);
+			return ability && abilityDealsDamage(ability, gear) ? p.startTick : null;
+		})
+		.filter((t): t is number => t !== null);
+
+	let active: ResolvedBuff | null = null;
+	let instanceCounter = 0;
+	for (const placement of sorted) {
+		const ability = placementAbility(placement, abilities);
+		if (!ability) continue;
+
+		if (active && placement.startTick < active.endTick && parseHitProfile(ability).kind === 'channel') {
+			bleedPlacementIds.add(placement.id);
+			active.endTick = placement.startTick;
+			active = null;
+			continue;
+		}
+
+		if (ability.name === 'Greater Barge') {
+			const priorDamagingTick = [...damagingTicks]
+				.filter((t) => t < placement.startTick)
+				.pop();
+			const outOfCombat =
+				priorDamagingTick === undefined ||
+				placement.startTick - priorDamagingTick >= GREATER_BARGE_OUT_OF_COMBAT_TICKS;
+			if (!outOfCombat) continue;
+
+			instanceCounter++;
+			active = {
+				placementId: `endless-assault-${instanceCounter}`,
+				abilityName: 'Endless Assault',
+				startTick: placement.startTick,
+				endTick: Math.min(
+					placement.startTick + GREATER_BARGE_BLEED_WINDOW_TICKS,
+					timelineLength
+				),
+				extensions: []
+			};
+			buffs.push(active);
+		}
+	}
+
+	return { buffs, bleedPlacementIds };
+}
+
+export const CHAOS_ROAR_BUFF_NAME = 'Chaos Roar';
+export const CHAOS_ROAR_DURATION_TICKS = 12; // 7.2s
+export const CHAOS_ROAR_DAMAGE_MULTIPLIER = 1.75;
+
+/**
+ * Resolves Chaos Roar's "empowered next strike": casting it starts a buff lasting 12 ticks (7.2s),
+ * consumed by the next damage-dealing melee ability the player uses, which then deals 1.75x base
+ * damage -- same active-window/consumption shape as resolveGreaterFuryBuffs (one outstanding buff
+ * at a time, re-casting simply restarts the window, only `abilityDealsDamage` placements consume
+ * it).
+ *
+ * Unlike Greater Fury's crit multiplier (which scales a channel's whole pre-split total, so every
+ * hit ends up boosted equally), Chaos Roar's bonus only applies to the FIRST hit of a channelled
+ * ability that consumes it -- per the user's direction, matching how a single "next strike" bonus
+ * naturally lands on just the opening hit of a multi-hit attack. A genuine bleed ability
+ * (BLEED_ABILITY_NAMES) gets the bonus on all of its hits instead, since a bleed's hits are all
+ * still that one "strike" landing over time rather than a channel's repeated separate attacks.
+ * Critically, a channel that Greater Barge's Endless Assault turns into a non-interruptible bleed
+ * (`endlessAssaultBleedPlacementIds`) is NOT a genuine bleed for this purpose -- it must still only
+ * get the bonus on its first hit, since `damageByTick` discriminates via `profile.isBleed`
+ * (BLEED_ABILITY_NAMES only), not the unioned isBleed value `resolveChannels` computes.
+ *
+ * Returns both the synthetic buff windows and the set of placement ids that actually consumed one,
+ * exactly like resolveGreaterFuryBuffs.
+ */
+export function resolveChaosRoarBuffs(
+	placements: TimelinePlacement[],
+	abilities: Ability[],
+	timelineLength: number,
+	gear: GearContext
+): { buffs: ResolvedBuff[]; bonusPlacementIds: Set<string> } {
+	const buffs: ResolvedBuff[] = [];
+	const bonusPlacementIds = new Set<string>();
+
+	const sorted = [...placements].sort((a, b) => a.startTick - b.startTick);
+
+	let active: ResolvedBuff | null = null;
+	let instanceCounter = 0;
+	for (const placement of sorted) {
+		const ability = placementAbility(placement, abilities);
+		if (!ability) continue;
+
+		if (active && placement.startTick < active.endTick) {
+			if (abilityDealsDamage(ability, gear)) {
+				bonusPlacementIds.add(placement.id);
+				active.endTick = placement.startTick;
+				active = null;
+				continue;
+			}
+		}
+
+		if (ability.name === CHAOS_ROAR_BUFF_NAME) {
+			instanceCounter++;
+			active = {
+				placementId: `chaos-roar-${instanceCounter}`,
+				abilityName: CHAOS_ROAR_BUFF_NAME,
+				startTick: placement.startTick,
+				endTick: Math.min(placement.startTick + CHAOS_ROAR_DURATION_TICKS, timelineLength),
+				extensions: []
+			};
+			buffs.push(active);
+		}
+	}
+
+	return { buffs, bonusPlacementIds };
+}
+
+/**
+ * The single entry point every resolver in this file should use to get a placement's full set of
+ * active buffs, INCLUDING Vestments of havoc's set-effect buffs (the synthetic "Havoc" window from
+ * resolveHavocBuffs, and Berserk's 3-piece duration extension), Greater Fury's status buff,
+ * Greater Barge's Endless Assault window, and Chaos Roar's empowered-next-strike buff -- rather
+ * than each caller separately remembering to merge these in. `setPieceCounts` defaults to `{}` (no
+ * sets equipped) and `gear` defaults to an always-two-handed/no-cape context (these status
+ * effects don't key off gear variants the way damageVariants does, so this default only affects
+ * whether a damageVariants-gated ability -- unrelated to any of them -- happens to be treated as
+ * damaging) so existing call sites/tests that don't care about these effects are unaffected.
+ */
+export function resolveAllBuffs(
+	placements: TimelinePlacement[],
+	abilities: Ability[],
+	timelineLength: number,
+	setPieceCounts: Record<string, number> = {},
+	gear: GearContext = { isTwoHanded: true, hasOffHandWeapon: false, equippedCapeName: null }
+): {
+	buffs: ResolvedBuff[];
+	havocInstantBursts: HavocInstantBurst[];
+	greaterFuryCritPlacementIds: Set<string>;
+	endlessAssaultBleedPlacementIds: Set<string>;
+	chaosRoarBonusPlacementIds: Set<string>;
+} {
+	const baseBuffs = resolveBuffs(placements, abilities, timelineLength);
+	const extended = applyVestmentsBerserkExtension(baseBuffs, setPieceCounts, timelineLength);
+	const havoc = resolveHavocBuffs(placements, abilities, timelineLength, setPieceCounts);
+	const fury = resolveGreaterFuryBuffs(placements, abilities, timelineLength, gear);
+	const barge = resolveEndlessAssaultBleeds(placements, abilities, timelineLength, gear);
+	const chaosRoar = resolveChaosRoarBuffs(placements, abilities, timelineLength, gear);
+	return {
+		buffs: [...extended, ...havoc.buffs, ...fury.buffs, ...barge.buffs, ...chaosRoar.buffs],
+		havocInstantBursts: havoc.instantBursts,
+		greaterFuryCritPlacementIds: fury.critPlacementIds,
+		endlessAssaultBleedPlacementIds: barge.bleedPlacementIds,
+		chaosRoarBonusPlacementIds: chaosRoar.bonusPlacementIds
+	};
 }
 
 /**
@@ -845,11 +1279,14 @@ export function cooldownZonesFor(
 /** Exclusive end tick of a channelled ability's full natural hit duration (its LAST hit tick + 1),
  *  regardless of its GCD block's own (always-3-tick) span -- e.g. Rapid Fire occupies its 3-tick
  *  GCD block like any other ability, but its 8 hits over 8 ticks means its natural channel window
- *  actually reaches further than that block alone. Null for a non-channelled ability. Same formula
- *  `requiredTimelineLength` already uses for a channel's reach. */
+ *  actually reaches further than that block alone. Null for a non-channelled ability, OR an
+ *  unconditional bleed (BLEED_ABILITY_NAMES, e.g. Dismember/Slaughter/Massacre) -- there's nothing
+ *  to "wait for" with a bleed since it's never interrupted regardless of what's placed after it
+ *  (see resolveChannels), so click-to-place shouldn't hold off on its account either. Otherwise
+ *  the same formula `requiredTimelineLength` uses for a channel's reach. */
 function channelNaturalEndTick(ability: Ability, startTick: number): number | null {
 	const profile = parseHitProfile(ability);
-	if (profile.kind !== 'channel') return null;
+	if (profile.kind !== 'channel' || profile.isBleed) return null;
 	return startTick + (profile.hits - 1) * profile.intervalTicks + 1;
 }
 
@@ -859,16 +1296,25 @@ function channelNaturalEndTick(ability: Ability, startTick: number): number | nu
  *  rather than landing partway through it and truncating it per resolveChannels' interruption
  *  behavior (dragging a placement to an exact tick can still deliberately interrupt a channel;
  *  this only affects the auto-picked slot for a plain palette click). Returns null if the timeline
- *  has no room left for it. */
+ *  has no room left for it.
+ *
+ * `bleedPlacementIds` (Greater Barge's Endless Assault conversion) exempts those specific
+ * placements from this "wait for it to finish" behavior the same way an unconditional bleed
+ * (BLEED_ABILITY_NAMES, handled directly inside channelNaturalEndTick) already is -- a bleed is by
+ * definition never interrupted by whatever comes after it (see resolveChannels), so there's
+ * nothing for click-to-place to protect by holding off; the next ability can go right after the
+ * bleed's own 3-tick GCD block, same as placing after any ordinary (non-channelled) ability. */
 export function nextOpenTick(
 	ability: Ability,
 	placements: TimelinePlacement[],
 	abilities: Ability[],
-	timelineLength: number
+	timelineLength: number,
+	bleedPlacementIds: ReadonlySet<string> = new Set()
 ): number | null {
 	const span = abilityTickSpan(ability);
 	const channelEndTicks = placements
 		.map((p) => {
+			if (bleedPlacementIds.has(p.id)) return null;
 			const placed = placementAbility(p, abilities);
 			return placed ? channelNaturalEndTick(placed, p.startTick) : null;
 		})
@@ -886,23 +1332,100 @@ export function nextOpenTick(
 	return null;
 }
 
+/** Every ability's per-hit damage is capped at this value, regardless of how high AD/damage%
+ *  pushes the computed total -- confirmed by the user as a real in-game cap that comes up often
+ *  on high-damage-% Melee abilities like Overpower. Applied per LANDED HIT (i.e. after dividing a
+ *  channel's total across its hits, and after any per-placement multiplier like Greater Fury's
+ *  crit), not to an ability's pre-split total -- a channel's individual hits are each independently
+ *  capped, not the channel's damage-total-before-division. */
+export const MAX_DAMAGE_PER_HIT = 30000;
+
 /**
  * Sums each placement's damage into the ticks it actually lands on. Single-hit abilities credit
- * their full `abilityDamageForPlacement` total to the start tick, unchanged. Channelled/DoT
- * abilities divide that same total evenly across their hits (their stored damagePercent is
- * already the ability's full total, not a per-hit value -- see parseHitProfile) and credit one
- * share to each of `resolveChannels`'s surviving hit ticks, so an interrupted channel's damage
- * total drops proportionally to match its visually-truncated hit window.
+ * their full `abilityDamageForPlacement` total (capped at MAX_DAMAGE_PER_HIT) to the start tick.
+ * Channelled/DoT abilities divide that same total evenly across their hits (their stored
+ * damagePercent is already the ability's full total, not a per-hit value -- see parseHitProfile),
+ * cap EACH resulting per-hit share independently, and credit one (capped) share to each of
+ * `resolveChannels`'s surviving hit ticks, so an interrupted channel's damage total drops
+ * proportionally to match its visually-truncated hit window. Greater Barge's Endless
+ * Assault-converted channels (`bleedPlacementIds`) are exempted from that truncation instead (see
+ * resolveChannels), so their full natural damage always lands regardless of what's placed after.
+ *
+ * `critPlacementIds` (Greater Fury's consumption target, see resolveGreaterFuryBuffs) multiplies
+ * that ONE specific placement's total damage by GREATER_FURY_CRIT_MULTIPLIER (1.5x) before it's
+ * spread across hits (and before the per-hit cap is applied, so a crit can still be capped down) --
+ * modeling a guaranteed critical strike as a flat damage multiplier, since this app has no
+ * underlying crit-chance/crit-damage model to hook a "real" crit into.
+ *
+ * `chaosRoarPlacementIds` (Chaos Roar's consumption target, see resolveChaosRoarBuffs) multiplies
+ * by CHAOS_ROAR_DAMAGE_MULTIPLIER (1.75x), but -- unlike Greater Fury's crit, which is folded into
+ * `totalDamage` before the per-hit split so every hit of a channel is boosted equally -- Chaos
+ * Roar's "empowers your next STRIKE" bonus only applies to a single hit: for a 'single'-kind
+ * placement that's simply its one hit, but for a 'channel' it's ONLY the first surviving hit
+ * (`resolved.hitTicks[0]`), unless the ability is a genuine bleed (`profile.isBleed`, i.e.
+ * BLEED_ABILITY_NAMES), in which case every hit counts as part of that one bleed "strike" and all
+ * get the bonus. Deliberately keyed off `profile.isBleed` rather than `resolved.isBleed` (which
+ * also folds in Greater Barge's Endless Assault conversion) so a channel that only became
+ * non-interruptible via Endless Assault still gets the bonus on its first hit alone, not all hits.
+ *
+ * `berserkBuffs` -- every ResolvedBuff whose `abilityName` is 'Berserk' (see resolveBuffs/
+ * resolveAllBuffs) -- applies BERSERK_MELEE_DAMAGE_MULTIPLIER (1.75x) to a placement's total
+ * damage whenever its start tick falls within any of those windows AND the ability is
+ * `style === 'melee'` (per Berserk's own wording, "Melee attacks deal 1.75x damage" -- it does not
+ * boost ranged/magic damage even though it's usable regardless of combat style). This stacks
+ * multiplicatively with Greater Fury's crit and Chaos Roar's bonus, same as every other
+ * multiplier here, since nothing in the wiki text suggests otherwise.
+ *
+ * `deathsSwiftnessBuffs` -- every ResolvedBuff whose `abilityName` is "Death's Swiftness" or
+ * "Greater Death's Swiftness" -- applies DEATHS_SWIFTNESS_RANGED_DAMAGE_MULTIPLIER (1.5x) to a
+ * placement's total damage under the same window/style-gating rule as Berserk above, just for
+ * `style === 'ranged'` instead of melee.
+ *
+ * `searingWindsBuffs` -- every ResolvedBuff whose `abilityName` is 'Galeshot' (Searing Winds' own
+ * casting ability, see BUFF_DISPLAY_NAME_TO_ABILITY_NAME) -- adds SEARING_WINDS_BONUS_PERCENT (20%)
+ * of `adTotal`, flat, to EACH landed hit of a `style === 'ranged'` ability whose hit lands within
+ * any of those windows (inclusive of the exact end tick, per the wiki: "An ability cast on the
+ * same tick Searing Winds runs out will still fully benefit"). Unlike Berserk/Greater Fury/Chaos
+ * Roar, which all scale a hit's OWN damage, this is a flat additive bonus independent of the hit's
+ * own damage percent -- and unlike those, it's added AFTER the per-hit cap (each hit's own damage
+ * is capped at MAX_DAMAGE_PER_HIT first, then Searing Winds' flat bonus is added on top, uncapped
+ * by that same ceiling) since it's a wiki-documented always-applies rider, not part of the hit's
+ * own scaling damage roll.
+ *
+ * Every 'single'-profile multi-hit ability (Deadshot's gear-dependent 4/8, Ricochet's 3, Adaptive
+ * Strike's 2 -- see hitCountFor) now has its total damage split across `hitCountFor(ability, gear)`
+ * simultaneous hits on its own start tick, each capped at MAX_DAMAGE_PER_HIT independently -- same
+ * per-hit treatment a channel already got -- so Searing Winds' bonus can be credited once per ACTUAL
+ * hit rather than once per placement (a Deadshot cast under Searing Winds gains 4x or 8x the flat
+ * bonus, exactly matching the wiki's own worked recommendation list). Chaos Roar's "first hit only"
+ * rule (see above) applies identically here: `i === 0` of this same-tick hit array.
+ *
+ * `hitChanceByStyle` -- the player's hit chance (0-100) against the selected target, keyed by
+ * combat style, e.g. `{ melee: 87.4 }` (see formulas/hitChance.ts). Applied as a flat multiplier
+ * (`hitChance / 100`) on `totalDamage`, same slot as every other multiplicative buff above --
+ * this is not a modeling approximation, it's literally how RS3 damage works: there is no
+ * separate hit/miss roll, a "miss" IS a 0 damage result already baked into the hit chance
+ * formula's expected value, so scaling average damage by hit chance is the exact mechanic, not
+ * a simplification of it. A style with no entry (or a missing/null selected target) defaults to
+ * 100% via `?? 100`, so every existing call site that doesn't pass this stays byte-for-byte
+ * identical to before hit chance was wired in.
  */
 export function damageByTick(
 	placements: TimelinePlacement[],
 	abilities: Ability[],
 	adTotal: number,
 	gear: GearContext,
-	timelineLength: number
+	timelineLength: number,
+	critPlacementIds: ReadonlySet<string> = new Set(),
+	bleedPlacementIds: ReadonlySet<string> = new Set(),
+	chaosRoarPlacementIds: ReadonlySet<string> = new Set(),
+	berserkBuffs: readonly ResolvedBuff[] = [],
+	searingWindsBuffs: readonly ResolvedBuff[] = [],
+	deathsSwiftnessBuffs: readonly ResolvedBuff[] = [],
+	hitChanceByStyle: Partial<Record<CombatStyle, number>> = {}
 ): number[] {
 	const result = new Array(timelineLength).fill(0);
-	const channels = resolveChannels(placements, abilities, timelineLength);
+	const channels = resolveChannels(placements, abilities, timelineLength, bleedPlacementIds);
 
 	for (const placement of placements) {
 		const ability = placementAbility(placement, abilities);
@@ -910,16 +1433,72 @@ export function damageByTick(
 		if (placement.startTick < 0 || placement.startTick >= timelineLength) continue;
 
 		const profile = parseHitProfile(ability);
-		const totalDamage = abilityDamageForPlacement(ability, adTotal, gear);
+		let totalDamage = abilityDamageForPlacement(ability, adTotal, gear);
+		if (critPlacementIds.has(placement.id)) {
+			totalDamage = Math.floor(totalDamage * GREATER_FURY_CRIT_MULTIPLIER);
+		}
+		if (
+			ability.style === 'melee' &&
+			berserkBuffs.some(
+				(b) => placement.startTick >= b.startTick && placement.startTick < b.endTick
+			)
+		) {
+			totalDamage = Math.floor(totalDamage * BERSERK_MELEE_DAMAGE_MULTIPLIER);
+		}
+		if (
+			ability.style === 'ranged' &&
+			deathsSwiftnessBuffs.some(
+				(b) => placement.startTick >= b.startTick && placement.startTick < b.endTick
+			)
+		) {
+			totalDamage = Math.floor(totalDamage * DEATHS_SWIFTNESS_RANGED_DAMAGE_MULTIPLIER);
+		}
+		const hitChance =
+			(hitChanceByStyle as Partial<Record<string, number>>)[ability.style] ?? 100;
+		if (hitChance !== 100) {
+			totalDamage = Math.floor(totalDamage * (hitChance / 100));
+		}
+		const hasChaosRoarBonus = chaosRoarPlacementIds.has(placement.id);
+		const searingWindsBonusPerHit =
+			ability.style === 'ranged'
+				? Math.floor(adTotal * SEARING_WINDS_BONUS_PERCENT)
+				: 0;
 
 		if (profile.kind === 'channel') {
 			const resolved = channels.find((c) => c.placementId === placement.id);
-			const perHitDamage = Math.floor(totalDamage / profile.hits);
-			for (const tick of resolved?.hitTicks ?? []) {
-				result[tick] += perHitDamage;
-			}
+			const perHitDamage = Math.min(Math.floor(totalDamage / profile.hits), MAX_DAMAGE_PER_HIT);
+			const boostedPerHitDamage = Math.min(
+				Math.floor(perHitDamage * CHAOS_ROAR_DAMAGE_MULTIPLIER),
+				MAX_DAMAGE_PER_HIT
+			);
+			const hitTicks = resolved?.hitTicks ?? [];
+			hitTicks.forEach((tick, i) => {
+				const boosted = hasChaosRoarBonus && (profile.isBleed || i === 0);
+				const searingWindsBonus =
+					searingWindsBonusPerHit > 0 &&
+					searingWindsBuffs.some((b) => tick >= b.startTick && tick <= b.endTick)
+						? searingWindsBonusPerHit
+						: 0;
+				result[tick] += (boosted ? boostedPerHitDamage : perHitDamage) + searingWindsBonus;
+			});
 		} else {
-			result[placement.startTick] += totalDamage;
+			const hitCount = hitCountFor(ability, gear);
+			const perHitDamage = Math.min(Math.floor(totalDamage / hitCount), MAX_DAMAGE_PER_HIT);
+			const boostedPerHitDamage = Math.min(
+				Math.floor(perHitDamage * CHAOS_ROAR_DAMAGE_MULTIPLIER),
+				MAX_DAMAGE_PER_HIT
+			);
+			const searingWindsBonus =
+				searingWindsBonusPerHit > 0 &&
+				searingWindsBuffs.some(
+					(b) => placement.startTick >= b.startTick && placement.startTick <= b.endTick
+				)
+					? searingWindsBonusPerHit
+					: 0;
+			for (let i = 0; i < hitCount; i++) {
+				const boosted = hasChaosRoarBonus && i === 0;
+				result[placement.startTick] += (boosted ? boostedPerHitDamage : perHitDamage) + searingWindsBonus;
+			}
 		}
 	}
 	return result;
@@ -942,6 +1521,105 @@ export function runningAverageDps(byTick: number[], tickSeconds = TICK_SECONDS):
 	return cumulative.map((total, i) => total / ((i + 1) * tickSeconds));
 }
 
+/** Default trailing window for the sliding-window DPM line -- a full minute, so the line reads
+ *  directly as "damage per minute" rather than a shorter window rescaled up to look like one. */
+export const DPM_WINDOW_SECONDS = 60;
+
+/**
+ * Trailing-window damage-per-minute at each tick: sum of damage dealt within the last
+ * `windowSeconds` (including the current tick), divided by however much of that window has
+ * actually elapsed so far (`min(windowSeconds, elapsedSeconds)`) -- NOT always the full window.
+ * Unlike `runningAverageDps` -- whose denominator grows for the whole fight, permanently smoothing
+ * out any burst/lull as the timeline goes on -- a sliding window stays sensitive to what's actually
+ * happening "now", which is what makes it useful as a chart line to inspect a rotation's shape
+ * rather than just its final average.
+ *
+ * Earlier versions of this function divided by the FULL window unconditionally, even at tick 3 of
+ * a 100-tick window where 97 of those ticks are simply in the future and haven't happened yet --
+ * that's a fundamentally different kind of zero than a real lull later in the fight, but the full
+ * fixed denominator treated them identically, permanently understating the true early-fight rate
+ * (e.g. one ability's hit at tick 1 would read as ~1/33rd its real annualized rate at a 3-tick-per-
+ * window-so-far point). Clamping the divisor to elapsed time fixes exactly that without giving up
+ * the sliding window's responsiveness once the window is actually full: after `windowSeconds` of
+ * elapsed time, `min` always resolves to the constant `windowFullSeconds` and behavior is identical
+ * to before.
+ *
+ * The divisor is additionally floored at `MIN_DPM_WINDOW_SECONDS` (3 ticks / 1.8s -- the global
+ * cooldown), not allowed to shrink all the way to a single tick. Below one GCD's worth of elapsed
+ * time, no second ability could possibly have landed yet regardless of how fast the player plays,
+ * so letting the divisor keep shrinking tick-by-tick (0.6s, then 1.2s, then 1.8s) would produce a
+ * spike-then-decay artifact -- an artificially huge DPM at the exact tick of the first hit that
+ * "decays" back down to the steady value over the next couple ticks, even though nothing about the
+ * rotation actually changed in that window. Flooring at one GCD instead makes the first hit read as
+ * one flat, correct rate from tick 0 through the earliest tick another hit could legally land.
+ */
+export const MIN_DPM_WINDOW_SECONDS = GCD_TICKS * TICK_SECONDS;
+
+export function slidingWindowDpm(
+	byTick: number[],
+	windowSeconds = DPM_WINDOW_SECONDS,
+	tickSeconds = TICK_SECONDS
+): number[] {
+	const windowTicks = Math.max(1, Math.round(windowSeconds / tickSeconds));
+	const windowFullSeconds = windowTicks * tickSeconds;
+	const result: number[] = new Array(byTick.length);
+	let windowSum = 0;
+	for (let i = 0; i < byTick.length; i++) {
+		windowSum += byTick[i];
+		const dropIndex = i - windowTicks;
+		if (dropIndex >= 0) windowSum -= byTick[dropIndex];
+		const elapsedSeconds = (i + 1) * tickSeconds;
+		const divisorSeconds = Math.min(
+			windowFullSeconds,
+			Math.max(MIN_DPM_WINDOW_SECONDS, elapsedSeconds)
+		);
+		result[i] = (windowSum / divisorSeconds) * 60;
+	}
+	return result;
+}
+
+/**
+ * End-to-end damage-over-time series for one setup's rotation: resolves buffs, then
+ * per-tick/cumulative/DPM damage -- exactly what Timeline.svelte derives internally for its own
+ * chart, extracted so the same pipeline can be run for every setup at once (e.g. `+page.svelte`'s
+ * multi-setup overlay chart) without duplicating the buff-resolution wiring per call site.
+ */
+export function computeDamageSeries(
+	placements: TimelinePlacement[],
+	abilities: Ability[],
+	adTotal: number,
+	gear: GearContext,
+	timelineLength: number,
+	setPieceCounts: Record<string, number> = {},
+	hitChanceByStyle: Partial<Record<CombatStyle, number>> = {}
+): { tickDamage: number[]; cumulative: number[]; dpm: number[] } {
+	const allBuffs = resolveAllBuffs(placements, abilities, timelineLength, setPieceCounts, gear);
+	const berserkBuffs = allBuffs.buffs.filter((b) => b.abilityName === 'Berserk');
+	const searingWindsBuffs = allBuffs.buffs.filter((b) => b.abilityName === 'Galeshot');
+	const deathsSwiftnessBuffs = allBuffs.buffs.filter(
+		(b) => b.abilityName === "Death's Swiftness" || b.abilityName === "Greater Death's Swiftness"
+	);
+	const tickDamage = damageByTick(
+		placements,
+		abilities,
+		adTotal,
+		gear,
+		timelineLength,
+		allBuffs.greaterFuryCritPlacementIds,
+		allBuffs.endlessAssaultBleedPlacementIds,
+		allBuffs.chaosRoarBonusPlacementIds,
+		berserkBuffs,
+		searingWindsBuffs,
+		deathsSwiftnessBuffs,
+		hitChanceByStyle
+	);
+	return {
+		tickDamage,
+		cumulative: cumulativeDamage(tickDamage),
+		dpm: slidingWindowDpm(tickDamage)
+	};
+}
+
 /**
  * Hand-curated hit counts for abilities whose real number of hits isn't statable from a
  * regex-friendly description phrase (same pattern as CONDITIONAL_COOLDOWNS). Ricochet always
@@ -953,13 +1631,33 @@ export const HIT_COUNT_OVERRIDES: Record<string, number> = {
 	Ricochet: 3
 };
 
+/** Gear context to assume when the caller doesn't have (or care about) one -- e.g. existing call
+ *  sites that pre-date hitCountVariants and don't pass gear at all. Matches resolveAllBuffs'
+ *  default (always two-handed, no cape), so a gear-dependent hit count falls back to each
+ *  ability's "Any" entry rather than silently guessing a cape is worn. */
+const NO_GEAR_CONTEXT: GearContext = {
+	isTwoHanded: true,
+	hasOffHandWeapon: false,
+	equippedCapeName: null
+};
+
 /**
  * How many times `ability` hits, for purposes like Imbue: Shadows' per-hit adrenaline bonus --
- * layered resolution: a channelled ability's own hit count; else a bare "N hits." phrase in the
- * description (covers simultaneous multi-hit abilities like Adaptive Strike's "2 hits."); else a
- * hand-curated override; else a plain single hit.
+ * layered resolution: `hitCountVariants` for the player's current gear (e.g. Deadshot's 4-vs-8
+ * hits with Igneous Kal-Xil/Kal-Zuk) takes priority over everything else, since it's the one
+ * explicit, curated source of truth when it exists; else a channelled ability's own hit count;
+ * else a bare "N hits." phrase in the description (covers simultaneous multi-hit abilities like
+ * Adaptive Strike's "2 hits."); else a hand-curated override; else a plain single hit.
+ *
+ * `hitCountVariants` must win over the bare-hits regex specifically because an ability with a
+ * gear-dependent hit count now mentions BOTH counts in its own description text (e.g. Deadshot:
+ * "...4 hits (Igneous Kal-Xil or Igneous Kal-Zuk: ...8 hits)"), so the regex alone would always
+ * match whichever number appears first, regardless of what's actually equipped.
  */
-export function hitCountFor(ability: Ability): number {
+export function hitCountFor(ability: Ability, gear: GearContext = NO_GEAR_CONTEXT): number {
+	const variantCount = resolveHitCountVariant(ability, gear);
+	if (variantCount !== null) return variantCount;
+
 	const profile = parseHitProfile(ability);
 	if (profile.kind === 'channel') return profile.hits;
 
@@ -974,15 +1672,16 @@ export const IMBUE_SHADOWS_ADRENALINE_PER_HIT = 5;
 /** Every landed-hit tick of `ability`, for resource modifiers (like Imbue: Shadows) that need to
  *  apply once per hit rather than once per placement -- a channelled ability's surviving hit ticks
  *  (per resolveChannels, so an interrupted channel only credits the hits that actually landed), or
- *  else just its own start tick, scaled to hitCountFor(ability) copies for a simultaneous
- *  multi-hit ability (Ricochet's 3, Adaptive Strike's 2, Deadshot's bare "8 hits.") since those
+ *  else just its own start tick, scaled to hitCountFor(ability, gear) copies for a simultaneous
+ *  multi-hit ability (Ricochet's 3, Adaptive Strike's 2, Deadshot's gear-dependent 4/8) since those
  *  don't have distinct timing to spread across. */
 export function hitTicksForPlacement(
 	placement: TimelinePlacement,
 	ability: Ability,
 	placements: TimelinePlacement[],
 	abilities: Ability[],
-	timelineLength: number
+	timelineLength: number,
+	gear: GearContext = NO_GEAR_CONTEXT
 ): number[] {
 	const profile = parseHitProfile(ability);
 	if (profile.kind === 'channel') {
@@ -990,7 +1689,7 @@ export function hitTicksForPlacement(
 		const channel = channels.find((c) => c.placementId === placement.id);
 		return channel?.hitTicks ?? [];
 	}
-	return Array(hitCountFor(ability)).fill(placement.startTick);
+	return Array(hitCountFor(ability, gear)).fill(placement.startTick);
 }
 
 export interface AdrenalineState {
@@ -999,6 +1698,10 @@ export interface AdrenalineState {
 	 *  amount required -- purely informational (see resolveAdrenaline's doc comment), never blocks
 	 *  placement. */
 	insufficientForCost: boolean;
+	/** The resource engine's own resolved ceiling for this tick -- normally 100, raised to 120 by
+	 *  Vestments of havoc's 4-piece bonus while active (see resolveResource's generic `cap`
+	 *  aspect). Exposed the same way resolveBloodlust already exposes Berserk's cap raise. */
+	cap: number;
 }
 
 const ADRENALINE_MAX = 100;
@@ -1124,12 +1827,53 @@ export const FURY_OF_THE_SMALL_MODIFIER: PassiveModifier = {
 	isActive: (ctx) => ctx.furyOfTheSmallActive
 };
 
+/** Vestments of havoc's 2-piece "Herald of Chaos" regen: 15% adrenaline spread evenly over
+ *  Havoc's 30-tick (18s) window -- 0.5%/tick. Modeled as a buffWindow perTickIncome against the
+ *  synthetic "Havoc" buff produced by resolveHavocBuffs (merged into resolveAdrenaline's own buffs
+ *  array), the same mechanism Meteor Strike's ambient income already uses. The instant 20% burst
+ *  from re-triggering while active is a separate one-off event (HavocInstantBurst) resolved via
+ *  ResourceDefinition.costRefundForPlacement instead of this generic per-tick path, since it's
+ *  tied to one specific placement rather than a recurring tick cadence any Modifier gate can
+ *  express (see resolveAdrenaline). */
+export const HAVOC_REGEN_PER_TICK = HAVOC_REGEN_PERCENT / HAVOC_DURATION_TICKS;
+
+export const HAVOC_REGEN_MODIFIER: BuffWindowModifier = {
+	kind: 'buffWindow',
+	subject: 'player',
+	resourceId: 'adrenaline',
+	resourceAspect: 'perTickIncome',
+	buffAbilityName: HAVOC_BUFF_NAME,
+	effect: { operation: 'add', value: HAVOC_REGEN_PER_TICK },
+	intervalTicks: 1,
+	source: { label: 'Herald of Chaos (Vestments of havoc, 2pc)' }
+};
+
+/** Vestments of havoc's 4-piece bonus: +20% maximum adrenaline while wielding a melee weapon.
+ *  A plain cap override, resolved by the same generic `cap` aspect Berserk's Bloodlust-cap raise
+ *  already uses -- gated on the generalized `setPieceCounts` context rather than a per-set boolean,
+ *  so future set effects that raise a resource's cap need only a new Modifier entry, not new
+ *  ModifierContext fields or resolver code. */
+export const VESTMENTS_OF_HAVOC_4PC_ADRENALINE_CAP = 120;
+
+export const VESTMENTS_OF_HAVOC_4PC_CAP_MODIFIER: PassiveModifier = {
+	kind: 'passive',
+	subject: 'player',
+	resourceId: 'adrenaline',
+	resourceAspect: 'cap',
+	effect: { operation: 'override', value: VESTMENTS_OF_HAVOC_4PC_ADRENALINE_CAP },
+	source: { label: 'Herald of Chaos (Vestments of havoc, 4pc)' },
+	isActive: (ctx) =>
+		(ctx.setPieceCounts[VESTMENTS_OF_HAVOC_SET_NAME] ?? 0) >= 4 && ctx.hasMeleeWeaponEquipped
+};
+
 const ADRENALINE_MODIFIERS: Modifier[] = [
 	RING_OF_VIGOUR_MODIFIER,
 	IMBUE_SHADOWS_ADRENALINE_MODIFIER,
 	METEOR_STRIKE_ADRENALINE_MODIFIER,
 	METEOR_STRIKE_BASIC_MULTIPLIER_MODIFIER,
-	FURY_OF_THE_SMALL_MODIFIER
+	FURY_OF_THE_SMALL_MODIFIER,
+	HAVOC_REGEN_MODIFIER,
+	VESTMENTS_OF_HAVOC_4PC_CAP_MODIFIER
 ];
 
 const ADRENALINE_DEFINITION: Omit<ResourceDefinition, 'hitTicksForPlacement'> = {
@@ -1143,10 +1887,12 @@ const ADRENALINE_DEFINITION: Omit<ResourceDefinition, 'hitTicksForPlacement'> = 
 /**
  * Simulates the adrenaline gauge across the whole timeline via the generic resource engine (see
  * resources.ts) -- starts at `startingAdrenaline`, and applies Ring of Vigour, Imbue: Shadows,
- * Meteor Strike's passive income/generation boost, and Fury of the Small's flat +1 generation as
- * Modifier objects rather than ad hoc checks. 120%+ support is explicitly deferred (clamped to
- * [0, 100]). A spend attempted without enough banked adrenaline still applies and clamps at 0 --
- * flagged via `insufficientForCost`, never blocked.
+ * Meteor Strike's passive income/generation boost, Fury of the Small's flat +1 generation, and
+ * Vestments of havoc's set effects (2pc regen/instant burst, 4pc cap raise) as Modifier objects
+ * rather than ad hoc checks. 120%+ is supported only via an active cap-raising Modifier (e.g.
+ * Vestments' 4-piece bonus) -- with no such Modifier active the cap still defaults to 100. A spend
+ * attempted without enough banked adrenaline still applies and clamps at 0 -- flagged via
+ * `insufficientForCost`, never blocked.
  */
 export function resolveAdrenaline(
 	placements: TimelinePlacement[],
@@ -1155,17 +1901,42 @@ export function resolveAdrenaline(
 	startingAdrenaline: number,
 	timelineLength: number,
 	ringOfVigourActive = false,
-	furyOfTheSmallActive = false
+	furyOfTheSmallActive = false,
+	setPieceCounts: Record<string, number> = {},
+	hasMeleeWeaponEquipped = false,
+	gear: GearContext = NO_GEAR_CONTEXT
 ): AdrenalineState[] {
-	const buffs = resolveBuffs(placements, abilities, timelineLength);
-	const ctx: ModifierContext = { combatStyle, ringOfVigourActive, furyOfTheSmallActive };
+	const { buffs, havocInstantBursts } = resolveAllBuffs(
+		placements,
+		abilities,
+		timelineLength,
+		setPieceCounts,
+		gear
+	);
+	const ctx: ModifierContext = {
+		combatStyle,
+		ringOfVigourActive,
+		furyOfTheSmallActive,
+		setPieceCounts,
+		hasMeleeWeaponEquipped
+	};
+	// Vestments of havoc's instant 20% burst (re-triggering Havoc while already active) fires only
+	// on the SPECIFIC melee-ultimate placement that caused the re-trigger -- not every melee
+	// ultimate cast, and not derivable from the ability alone, so it can't be expressed as an
+	// ordinary Modifier (PassiveModifier.isActive/appliesToAbility never see the tick or the
+	// specific placement instance). costRefundForPlacement exists exactly for this: it fires
+	// alongside the placement's own costRefund Modifiers, keyed on the exact placement rather than
+	// a static gate.
+	const burstTicksByPlacementId = new Map(havocInstantBursts.map((b) => [b.placementId, b.percent]));
 	const definition: ResourceDefinition = {
 		...ADRENALINE_DEFINITION,
 		startingValue: startingAdrenaline,
 		hitTicksForPlacement: (placement, ability) =>
-			hitTicksForPlacement(placement, ability, placements, abilities, timelineLength)
+			hitTicksForPlacement(placement, ability, placements, abilities, timelineLength, gear),
+		costRefundForPlacement: (placement) => burstTicksByPlacementId.get(placement.id) ?? 0
 	};
-	return resolveResource(
+
+	const states = resolveResource(
 		definition,
 		placements,
 		abilities,
@@ -1173,12 +1944,31 @@ export function resolveAdrenaline(
 		buffs,
 		ctx,
 		timelineLength
-	).map(({ value, insufficientForCost }) => ({ value, insufficientForCost }));
+	);
+
+	return states.map(({ value, insufficientForCost, cap }) => ({ value, insufficientForCost, cap }));
 }
 
 export const BLOODLUST_BASE_CAP = 4;
 export const BLOODLUST_BERSERK_CAP = 8;
 export const BERSERK_BASIC_MULTIPLIER = 2;
+/** "Melee attacks deal 1.75x damage" while Berserk is active -- see damageByTick's `berserkBuffs`
+ *  param, gated on `ability.style === 'melee'` since Berserk doesn't boost ranged/magic damage. */
+export const BERSERK_MELEE_DAMAGE_MULTIPLIER = 1.75;
+
+/** "Ranged attacks deal 1.5x damage" while Death's Swiftness/Greater Death's Swiftness is active --
+ *  see damageByTick's `deathsSwiftnessBuffs` param, gated on `ability.style === 'ranged'`, the exact
+ *  ranged analogue of Berserk's melee multiplier above. Both abilities share this multiplier and are
+ *  matched by `abilityName` (see BUFF_DISPLAY_NAME_TO_ABILITY_NAME-less direct lookup below), since
+ *  neither renames its buff the way Galeshot/Imbue: Shadows do. */
+export const DEATHS_SWIFTNESS_RANGED_DAMAGE_MULTIPLIER = 1.5;
+
+/** "Ranged attacks deal an additional 20% ability damage bonus damage with each hit" while
+ *  Galeshot's Searing Winds is active -- see damageByTick's `searingWindsBuffs` param, gated on
+ *  `ability.style === 'ranged'`. A FLAT addition of `adTotal * 0.20` per landed hit, not a
+ *  multiplier on the hit's own damage (unlike Berserk/Greater Fury/Chaos Roar) -- confirmed by the
+ *  wiki's exact wording ("bonus damage", not "increased damage" or "Nx damage"). */
+export const SEARING_WINDS_BONUS_PERCENT = 0.2;
 
 /** Parses "Generates N Bloodlust stack(s)." from an ability's description; 0 if absent. */
 export function parseBloodlustGenerate(ability: Ability): number {
@@ -1237,18 +2027,24 @@ const BLOODLUST_DEFINITION: ResourceDefinition = {
  * steady), starting at 0 (no starting-stacks config exists, unlike adrenaline). Berserk's cap raise
  * and 2x Basic generation are Modifier objects rather than ad hoc checks. A placement's "consumes N
  * stacks" bonus effect only fires if at least N are currently banked -- otherwise it's simply
- * skipped, same permissive spirit as everywhere else in this file.
+ * skipped, same permissive spirit as everywhere else in this file. `setPieceCounts` defaults to
+ * `{}` -- Vestments of havoc's 3-piece bonus extends Berserk's own duration (see
+ * applyVestmentsBerserkExtension via resolveAllBuffs), which in turn widens the window this
+ * resource's Berserk-gated Modifiers stay active for.
  */
 export function resolveBloodlust(
 	placements: TimelinePlacement[],
 	abilities: Ability[],
-	timelineLength: number
+	timelineLength: number,
+	setPieceCounts: Record<string, number> = {}
 ): ResourceState[] {
-	const buffs = resolveBuffs(placements, abilities, timelineLength);
+	const { buffs } = resolveAllBuffs(placements, abilities, timelineLength, setPieceCounts);
 	const ctx: ModifierContext = {
 		combatStyle: null,
 		ringOfVigourActive: false,
-		furyOfTheSmallActive: false
+		furyOfTheSmallActive: false,
+		setPieceCounts,
+		hasMeleeWeaponEquipped: false
 	};
 	return resolveResource(
 		BLOODLUST_DEFINITION,

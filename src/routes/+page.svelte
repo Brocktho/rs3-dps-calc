@@ -8,6 +8,8 @@
 		bosses,
 		boostedLevel,
 		calculateAbilityDamage,
+		computeDamageSeries,
+		resolveAdrenaline,
 		hitChance,
 		hybridNerf,
 		NECROMANCY_AFFINITY,
@@ -33,6 +35,7 @@
 	import Combobox from '$lib/components/Combobox.svelte';
 	import ItemStatPopover from '$lib/components/ItemStatPopover.svelte';
 	import Timeline from '$lib/components/Timeline.svelte';
+	import { encodeShareState, decodeShareState } from '$lib/shareState';
 
 	type TabId = 'stats' | 'gear' | 'prayers' | 'config';
 	type GearSlotId =
@@ -95,7 +98,8 @@
 		offHand: 'Off Hand (Shield)',
 		cape: 'Cape',
 		neck: 'Necklace',
-		ring: 'Ring'
+		ring: 'Ring',
+		pocket: 'Pocket'
 	};
 
 	function equipSlotLabel(e: EquipItem): string {
@@ -140,13 +144,127 @@
 
 	let activeTab: TabId = $state('stats');
 
-	// --- Stats tab ---
-	let mageLevel: number = $state(99);
-	let rangedLevel: number = $state(99);
-	let attackLevel: number = $state(99);
-	let strengthLevel: number = $state(99);
-	let defenceLevel: number = $state(99);
-	let necromancyLevel: number = $state(99);
+	// --- Setups: independent gear/stats/prayers/config + timeline configurations the user can
+	// switch between and compare. Everything a user can configure in the Stats/Gear/Prayers/Config
+	// tabs, plus the rotation timeline itself, lives inside one Setup object -- switching the active
+	// tab swaps out the whole configuration. A newly-created setup starts as a deep copy of the
+	// currently active one, so iterating on a variant doesn't mean starting from scratch.
+	interface Setup {
+		id: string;
+		label: string;
+		mageLevel: number;
+		rangedLevel: number;
+		attackLevel: number;
+		strengthLevel: number;
+		defenceLevel: number;
+		necromancyLevel: number;
+		selectedBoostNames: string[];
+		mainHandWeaponName: string;
+		offHandWeaponName: string;
+		ammoName: string;
+		headArmourName: string;
+		torsoArmourName: string;
+		legsArmourName: string;
+		handsArmourName: string;
+		feetArmourName: string;
+		shieldName: string;
+		capeArmourName: string;
+		neckArmourName: string;
+		ringArmourName: string;
+		prayerMode: 'prayers' | 'curses';
+		selectedPrayerNames: { accuracy: string | null; damage: string | null; armour: string | null };
+		selectedSpellName: string;
+		hasStatiusWarhammer: boolean;
+		hasVulnBomb: boolean;
+		hasSmokeCloud: boolean;
+		weaponPoison: (typeof WEAPON_POISON_OPTIONS)[number];
+		startingAdrenaline: number;
+		hasRingOfVigour: boolean;
+		hasFuryOfTheSmall: boolean;
+		timelinePlacements: TimelinePlacement[];
+		timelineStyleFilterEnabled: boolean;
+		timelineLength: number;
+	}
+
+	function createSetup(label: string): Setup {
+		return {
+			id: crypto.randomUUID(),
+			label,
+			mageLevel: 99,
+			rangedLevel: 99,
+			attackLevel: 99,
+			strengthLevel: 99,
+			defenceLevel: 99,
+			necromancyLevel: 99,
+			selectedBoostNames: [],
+			mainHandWeaponName: '',
+			offHandWeaponName: '',
+			ammoName: '',
+			headArmourName: '',
+			torsoArmourName: '',
+			legsArmourName: '',
+			handsArmourName: '',
+			feetArmourName: '',
+			shieldName: '',
+			capeArmourName: '',
+			neckArmourName: '',
+			ringArmourName: '',
+			prayerMode: 'prayers',
+			selectedPrayerNames: { accuracy: null, damage: null, armour: null },
+			selectedSpellName: '',
+			hasStatiusWarhammer: false,
+			hasVulnBomb: false,
+			hasSmokeCloud: false,
+			weaponPoison: 'N/A',
+			startingAdrenaline: 0,
+			hasRingOfVigour: false,
+			hasFuryOfTheSmall: false,
+			timelinePlacements: [],
+			timelineStyleFilterEnabled: true,
+			timelineLength: 100
+		};
+	}
+
+	let setups: Setup[] = $state([createSetup('Loadout 1')]);
+	let activeSetupIndex: number = $state(0);
+	const activeSetup = $derived(setups[activeSetupIndex]);
+
+	function addSetup() {
+		const copy: Setup = {
+			...structuredClone($state.snapshot(activeSetup)),
+			id: crypto.randomUUID(),
+			label: `Loadout ${setups.length + 1}`
+		};
+		setups.push(copy);
+		activeSetupIndex = setups.length - 1;
+	}
+
+	// --- Setup tab renaming: double-click a tab to edit its name inline ---
+	let renamingSetupId: string | null = $state(null);
+	let renameDraft: string = $state('');
+
+	function startRenamingSetup(setup: Setup) {
+		renamingSetupId = setup.id;
+		renameDraft = setup.label;
+	}
+
+	function commitRenameSetup(setup: Setup) {
+		const trimmed = renameDraft.trim();
+		if (trimmed) setup.label = trimmed;
+		renamingSetupId = null;
+	}
+
+	function cancelRenamingSetup() {
+		renamingSetupId = null;
+	}
+
+	// Focuses (and selects) an input as soon as it's mounted -- used for the rename input, which
+	// needs to grab focus immediately when it replaces the tab button, without the a11y-linted
+	// `autofocus` attribute (which fires on page load too, not just element creation).
+	function focusOnMount(node: HTMLInputElement) {
+		node.focus();
+		node.select();
+	}
 
 	// HiScores lookup: fetches a player's combat levels from the official RS3 HiScores (via
 	// a server-side proxy at /api/hiscores, since the upstream endpoint has no CORS headers)
@@ -167,12 +285,12 @@
 				throw new Error(body?.message ?? `Lookup failed (${res.status})`);
 			}
 			const levels = await res.json();
-			attackLevel = levels.attack;
-			defenceLevel = levels.defence;
-			strengthLevel = levels.strength;
-			rangedLevel = levels.ranged;
-			mageLevel = levels.magic;
-			necromancyLevel = levels.necromancy;
+			activeSetup.attackLevel = levels.attack;
+			activeSetup.defenceLevel = levels.defence;
+			activeSetup.strengthLevel = levels.strength;
+			activeSetup.rangedLevel = levels.ranged;
+			activeSetup.mageLevel = levels.magic;
+			activeSetup.necromancyLevel = levels.necromancy;
 			hiscoresStatus = 'idle';
 		} catch (e) {
 			hiscoresStatus = 'error';
@@ -183,13 +301,14 @@
 	// Active temporary skill boosts (Overload family, Super/Extreme/Supreme potions). Multiple
 	// can be toggled on at once -- boostedLevel() picks the single highest result among
 	// whichever active boosts apply to each skill, matching how boosts don't stack in-game.
-	let selectedBoostNames: string[] = $state([]);
-	const activeBoosts = $derived(skillBoosts.filter((b) => selectedBoostNames.includes(b.name)));
+	const activeBoosts = $derived(
+		skillBoosts.filter((b) => activeSetup.selectedBoostNames.includes(b.name))
+	);
 
 	function toggleBoost(boost: SkillBoost) {
-		selectedBoostNames = selectedBoostNames.includes(boost.name)
-			? selectedBoostNames.filter((n) => n !== boost.name)
-			: [...selectedBoostNames, boost.name];
+		activeSetup.selectedBoostNames = activeSetup.selectedBoostNames.includes(boost.name)
+			? activeSetup.selectedBoostNames.filter((n) => n !== boost.name)
+			: [...activeSetup.selectedBoostNames, boost.name];
 	}
 
 	const SKILL_ROWS: {
@@ -214,39 +333,39 @@
 	function baseLevelFor(skill: BoostableSkill): number {
 		switch (skill) {
 			case 'attack':
-				return attackLevel;
+				return activeSetup.attackLevel;
 			case 'strength':
-				return strengthLevel;
+				return activeSetup.strengthLevel;
 			case 'defence':
-				return defenceLevel;
+				return activeSetup.defenceLevel;
 			case 'ranged':
-				return rangedLevel;
+				return activeSetup.rangedLevel;
 			case 'magic':
-				return mageLevel;
+				return activeSetup.mageLevel;
 			case 'necromancy':
-				return necromancyLevel;
+				return activeSetup.necromancyLevel;
 		}
 	}
 
 	function setBaseLevelFor(skill: BoostableSkill, value: number) {
 		switch (skill) {
 			case 'attack':
-				attackLevel = value;
+				activeSetup.attackLevel = value;
 				break;
 			case 'strength':
-				strengthLevel = value;
+				activeSetup.strengthLevel = value;
 				break;
 			case 'defence':
-				defenceLevel = value;
+				activeSetup.defenceLevel = value;
 				break;
 			case 'ranged':
-				rangedLevel = value;
+				activeSetup.rangedLevel = value;
 				break;
 			case 'magic':
-				mageLevel = value;
+				activeSetup.mageLevel = value;
 				break;
 			case 'necromancy':
-				necromancyLevel = value;
+				activeSetup.necromancyLevel = value;
 				break;
 		}
 	}
@@ -256,32 +375,24 @@
 	}
 
 	// --- Gear tab ---
-	let mainHandWeaponName: string = $state('');
-	let offHandWeaponName: string = $state('');
-	let ammoName: string = $state('');
-	let headArmourName: string = $state('');
-	let torsoArmourName: string = $state('');
-	let legsArmourName: string = $state('');
-	let handsArmourName: string = $state('');
-	let feetArmourName: string = $state('');
-	let shieldName: string = $state('');
-	let capeArmourName: string = $state('');
-	let neckArmourName: string = $state('');
-	let ringArmourName: string = $state('');
 	let pendingItemPick: string = $state('');
 
-	const mainHandWeapon = $derived(weapons.find((w) => w.name === mainHandWeaponName) ?? null);
-	const offHandWeapon = $derived(weapons.find((w) => w.name === offHandWeaponName) ?? null);
-	const equippedAmmo = $derived(ammo.find((a) => a.name === ammoName) ?? null);
-	const headArmour = $derived(armour.find((a) => a.name === headArmourName) ?? null);
-	const torsoArmour = $derived(armour.find((a) => a.name === torsoArmourName) ?? null);
-	const legsArmour = $derived(armour.find((a) => a.name === legsArmourName) ?? null);
-	const handsArmour = $derived(armour.find((a) => a.name === handsArmourName) ?? null);
-	const feetArmour = $derived(armour.find((a) => a.name === feetArmourName) ?? null);
-	const shield = $derived(armour.find((a) => a.name === shieldName) ?? null);
-	const capeArmour = $derived(armour.find((a) => a.name === capeArmourName) ?? null);
-	const neckArmour = $derived(armour.find((a) => a.name === neckArmourName) ?? null);
-	const ringArmour = $derived(armour.find((a) => a.name === ringArmourName) ?? null);
+	const mainHandWeapon = $derived(
+		weapons.find((w) => w.name === activeSetup.mainHandWeaponName) ?? null
+	);
+	const offHandWeapon = $derived(
+		weapons.find((w) => w.name === activeSetup.offHandWeaponName) ?? null
+	);
+	const equippedAmmo = $derived(ammo.find((a) => a.name === activeSetup.ammoName) ?? null);
+	const headArmour = $derived(armour.find((a) => a.name === activeSetup.headArmourName) ?? null);
+	const torsoArmour = $derived(armour.find((a) => a.name === activeSetup.torsoArmourName) ?? null);
+	const legsArmour = $derived(armour.find((a) => a.name === activeSetup.legsArmourName) ?? null);
+	const handsArmour = $derived(armour.find((a) => a.name === activeSetup.handsArmourName) ?? null);
+	const feetArmour = $derived(armour.find((a) => a.name === activeSetup.feetArmourName) ?? null);
+	const shield = $derived(armour.find((a) => a.name === activeSetup.shieldName) ?? null);
+	const capeArmour = $derived(armour.find((a) => a.name === activeSetup.capeArmourName) ?? null);
+	const neckArmour = $derived(armour.find((a) => a.name === activeSetup.neckArmourName) ?? null);
+	const ringArmour = $derived(armour.find((a) => a.name === activeSetup.ringArmourName) ?? null);
 	const mainHandIsTwoHanded = $derived(mainHandWeapon?.slot === 'twoHanded');
 
 	// The in-game Combat Stats interface shows a "Main-hand Damage" stat (Weapon + Skill
@@ -308,7 +419,7 @@
 	// doc comment on Armour.armour).
 	const totalArmour = $derived(
 		Math.floor(
-			baseArmourRating(defenceLevel) +
+			baseArmourRating(activeSetup.defenceLevel) +
 				(headArmour?.armour ?? 0) +
 				(torsoArmour?.armour ?? 0) +
 				(legsArmour?.armour ?? 0) +
@@ -349,15 +460,15 @@
 		| null = $state(null);
 
 	$effect(() => {
-		if (mainHandIsTwoHanded) offHandWeaponName = '';
+		if (mainHandIsTwoHanded) activeSetup.offHandWeaponName = '';
 	});
 
 	// A shield and an off-hand weapon can't be worn at once -- equipping either clears the other.
 	$effect(() => {
-		if (offHandWeaponName) shieldName = '';
+		if (activeSetup.offHandWeaponName) activeSetup.shieldName = '';
 	});
 	$effect(() => {
-		if (shieldName) offHandWeaponName = '';
+		if (activeSetup.shieldName) activeSetup.offHandWeaponName = '';
 	});
 
 	// Single shared "Equip an item" combobox: routes the picked item into whichever slot
@@ -372,42 +483,42 @@
 		if (!picked) return;
 
 		if (picked.kind === 'ammo') {
-			ammoName = picked.item.name;
+			activeSetup.ammoName = picked.item.name;
 		} else if (picked.kind === 'armour') {
 			switch (picked.item.slot) {
 				case 'head':
-					headArmourName = picked.item.name;
+					activeSetup.headArmourName = picked.item.name;
 					break;
 				case 'torso':
-					torsoArmourName = picked.item.name;
+					activeSetup.torsoArmourName = picked.item.name;
 					break;
 				case 'legs':
-					legsArmourName = picked.item.name;
+					activeSetup.legsArmourName = picked.item.name;
 					break;
 				case 'hands':
-					handsArmourName = picked.item.name;
+					activeSetup.handsArmourName = picked.item.name;
 					break;
 				case 'feet':
-					feetArmourName = picked.item.name;
+					activeSetup.feetArmourName = picked.item.name;
 					break;
 				case 'offHand':
-					shieldName = picked.item.name;
+					activeSetup.shieldName = picked.item.name;
 					break;
 				case 'cape':
-					capeArmourName = picked.item.name;
+					activeSetup.capeArmourName = picked.item.name;
 					break;
 				case 'neck':
-					neckArmourName = picked.item.name;
+					activeSetup.neckArmourName = picked.item.name;
 					break;
 				case 'ring':
-					ringArmourName = picked.item.name;
+					activeSetup.ringArmourName = picked.item.name;
 					break;
 			}
 		} else if (picked.item.slot === 'offHand') {
-			offHandWeaponName = picked.item.name;
+			activeSetup.offHandWeaponName = picked.item.name;
 		} else {
-			mainHandWeaponName = picked.item.name;
-			if (picked.item.slot === 'twoHanded') offHandWeaponName = '';
+			activeSetup.mainHandWeaponName = picked.item.name;
+			if (picked.item.slot === 'twoHanded') activeSetup.offHandWeaponName = '';
 		}
 	});
 
@@ -415,17 +526,10 @@
 	// Players only ever have access to standard Prayers OR Ancient Curses at once, never
 	// both -- switching modes clears the other mode's selections, since they can't be active
 	// simultaneously in-game.
-	let prayerMode: 'prayers' | 'curses' = $state('prayers');
-	let selectedPrayerNames: {
-		accuracy: string | null;
-		damage: string | null;
-		armour: string | null;
-	} = $state({ accuracy: null, damage: null, armour: null });
-
 	function setPrayerMode(mode: 'prayers' | 'curses') {
-		if (prayerMode === mode) return;
-		prayerMode = mode;
-		selectedPrayerNames = { accuracy: null, damage: null, armour: null };
+		if (activeSetup.prayerMode === mode) return;
+		activeSetup.prayerMode = mode;
+		activeSetup.selectedPrayerNames = { accuracy: null, damage: null, armour: null };
 	}
 
 	// Selecting a prayer fills every slot it covers (e.g. Piety fills accuracy+damage+armour
@@ -433,224 +537,161 @@
 	// in-game deactivates any single-purpose prayer that was active). Clicking an
 	// already-active prayer deactivates it (clears only the slots it was occupying).
 	function togglePrayer(prayer: Prayer) {
-		const isActive = prayer.slots.every((slot) => selectedPrayerNames[slot] === prayer.name);
-		const next = { ...selectedPrayerNames };
+		const isActive = prayer.slots.every(
+			(slot) => activeSetup.selectedPrayerNames[slot] === prayer.name
+		);
+		const next = { ...activeSetup.selectedPrayerNames };
 		for (const slot of prayer.slots) {
 			next[slot] = isActive ? null : prayer.name;
 		}
-		selectedPrayerNames = next;
+		activeSetup.selectedPrayerNames = next;
 	}
 
 	const activePrayers = $derived(
-		[selectedPrayerNames.accuracy, selectedPrayerNames.damage, selectedPrayerNames.armour]
+		[
+			activeSetup.selectedPrayerNames.accuracy,
+			activeSetup.selectedPrayerNames.damage,
+			activeSetup.selectedPrayerNames.armour
+		]
 			.filter((name, index, all) => name !== null && all.indexOf(name) === index)
 			.map((name) => prayers.find((p) => p.name === name))
 			.filter((p) => p !== undefined)
 	);
 
 	// --- Config tab ---
-	let selectedSpellName: string = $state('');
-	let hasStatiusWarhammer: boolean = $state(false);
-	let hasVulnBomb: boolean = $state(false);
-	let hasSmokeCloud: boolean = $state(false);
-	let weaponPoison: (typeof WEAPON_POISON_OPTIONS)[number] = $state('N/A');
-	// 0-100 for now -- some setups can push this to 120%, deferred until that's actually modeled.
-	let startingAdrenaline: number = $state(0);
-	let hasRingOfVigour: boolean = $state(false);
-	let hasFuryOfTheSmall: boolean = $state(false);
+	// (all fields now live on Setup -- see activeSetup)
 
 	// --- Monster panel: selected boss for hit chance calculation ---
+	// Shared globally across all setups -- comparing setups only makes sense against one target.
 	let selectedBossName: string = $state('');
 
 	// --- Persistence: restore whatever the user manually entered on their last visit ---
-	// Covers Stats/Gear/Config values only -- not transient UI state like pendingItemPick
-	// (mid-pick combobox selection) or hiscoresStatus/hiscoresError (in-flight lookup state),
-	// which don't make sense to resurrect on reload.
+	// Covers the whole `setups` array (all Stats/Gear/Prayers/Config/timeline data for every
+	// setup tab, plus which one was active) and the globally-shared boss selection -- not
+	// transient UI state like pendingItemPick (mid-pick combobox selection) or
+	// hiscoresStatus/hiscoresError (in-flight lookup state), which don't make sense to resurrect
+	// on reload.
 	interface PersistedState {
-		mageLevel: number;
-		rangedLevel: number;
-		attackLevel: number;
-		strengthLevel: number;
-		defenceLevel: number;
-		necromancyLevel: number;
+		setups: Setup[];
+		activeSetupIndex: number;
 		hiscoresPlayerName: string;
-		selectedBoostNames: string[];
 		selectedBossName: string;
-		prayerMode: 'prayers' | 'curses';
-		selectedPrayerNames: { accuracy: string | null; damage: string | null; armour: string | null };
-		mainHandWeaponName: string;
-		offHandWeaponName: string;
-		ammoName: string;
-		headArmourName: string;
-		torsoArmourName: string;
-		legsArmourName: string;
-		handsArmourName: string;
-		feetArmourName: string;
-		shieldName: string;
-		capeArmourName: string;
-		neckArmourName: string;
-		ringArmourName: string;
-		selectedSpellName: string;
-		hasStatiusWarhammer: boolean;
-		hasVulnBomb: boolean;
-		hasSmokeCloud: boolean;
-		weaponPoison: (typeof WEAPON_POISON_OPTIONS)[number];
-		startingAdrenaline: number;
-		hasRingOfVigour: boolean;
-		hasFuryOfTheSmall: boolean;
-		timelinePlacements: TimelinePlacement[];
-		timelineStyleFilterEnabled: boolean;
-		timelineLength: number;
+	}
+
+	function isValidSetup(s: unknown): s is Setup {
+		if (!s || typeof s !== 'object') return false;
+		const setup = s as Record<string, unknown>;
+		return (
+			typeof setup.id === 'string' &&
+			typeof setup.label === 'string' &&
+			typeof setup.mageLevel === 'number' &&
+			Array.isArray(setup.timelinePlacements)
+		);
 	}
 
 	const PERSISTENCE_KEY = 'rs3-dps-calc:sheet';
+	const SHARE_QUERY_PARAM = 'share';
 
 	let hasRestored = $state(false);
 
-	onMount(() => {
-		try {
-			const raw = localStorage.getItem(PERSISTENCE_KEY);
-			if (!raw) return;
-			const saved: Partial<PersistedState> = JSON.parse(raw);
+	// --- Share loadout: encodes setups/activeSetupIndex/selectedBossName (the same shape as
+	// local persistence, minus the player's hiscores name) into a gzip+base64url query param.
+	// A visitor who opens the link gets an exact read-only-at-first copy of the sender's state --
+	// applying it just seeds the same $state that normal editing/persistence already uses, so
+	// the shared state becomes editable and locally-persisted like any other session from there.
+	type ShareableState = Pick<PersistedState, 'setups' | 'activeSetupIndex' | 'selectedBossName'>;
 
-			if (typeof saved.mageLevel === 'number') mageLevel = saved.mageLevel;
-			if (typeof saved.rangedLevel === 'number') rangedLevel = saved.rangedLevel;
-			if (typeof saved.attackLevel === 'number') attackLevel = saved.attackLevel;
-			if (typeof saved.strengthLevel === 'number') strengthLevel = saved.strengthLevel;
-			if (typeof saved.defenceLevel === 'number') defenceLevel = saved.defenceLevel;
-			if (typeof saved.necromancyLevel === 'number') necromancyLevel = saved.necromancyLevel;
-			if (typeof saved.hiscoresPlayerName === 'string') {
-				hiscoresPlayerName = saved.hiscoresPlayerName;
-			}
-			if (
-				Array.isArray(saved.selectedBoostNames) &&
-				saved.selectedBoostNames.every((n) => typeof n === 'string')
-			) {
-				selectedBoostNames = saved.selectedBoostNames;
-			}
-			if (typeof saved.selectedBossName === 'string') selectedBossName = saved.selectedBossName;
-			if (saved.prayerMode === 'prayers' || saved.prayerMode === 'curses') {
-				prayerMode = saved.prayerMode;
-			}
-			if (
-				saved.selectedPrayerNames &&
-				typeof saved.selectedPrayerNames === 'object' &&
-				['accuracy', 'damage', 'armour'].every(
-					(slot) =>
-						saved.selectedPrayerNames![slot as keyof typeof saved.selectedPrayerNames] === null ||
-						typeof saved.selectedPrayerNames![slot as keyof typeof saved.selectedPrayerNames] ===
-							'string'
-				)
-			) {
-				selectedPrayerNames = saved.selectedPrayerNames;
-			}
+	let shareStatus: 'idle' | 'copying' | 'copied' | 'error' = $state('idle');
 
-			if (typeof saved.mainHandWeaponName === 'string') {
-				mainHandWeaponName = saved.mainHandWeaponName;
-			}
-			if (typeof saved.offHandWeaponName === 'string') offHandWeaponName = saved.offHandWeaponName;
-			if (typeof saved.ammoName === 'string') ammoName = saved.ammoName;
-			if (typeof saved.headArmourName === 'string') headArmourName = saved.headArmourName;
-			if (typeof saved.torsoArmourName === 'string') torsoArmourName = saved.torsoArmourName;
-			if (typeof saved.legsArmourName === 'string') legsArmourName = saved.legsArmourName;
-			if (typeof saved.handsArmourName === 'string') handsArmourName = saved.handsArmourName;
-			if (typeof saved.feetArmourName === 'string') feetArmourName = saved.feetArmourName;
-			if (typeof saved.shieldName === 'string') shieldName = saved.shieldName;
-			if (typeof saved.capeArmourName === 'string') capeArmourName = saved.capeArmourName;
-			if (typeof saved.neckArmourName === 'string') neckArmourName = saved.neckArmourName;
-			if (typeof saved.ringArmourName === 'string') ringArmourName = saved.ringArmourName;
-
-			if (typeof saved.selectedSpellName === 'string') selectedSpellName = saved.selectedSpellName;
-			if (typeof saved.hasStatiusWarhammer === 'boolean') {
-				hasStatiusWarhammer = saved.hasStatiusWarhammer;
-			}
-			if (typeof saved.hasVulnBomb === 'boolean') hasVulnBomb = saved.hasVulnBomb;
-			if (typeof saved.hasSmokeCloud === 'boolean') hasSmokeCloud = saved.hasSmokeCloud;
-			if (
-				typeof saved.weaponPoison === 'string' &&
-				(WEAPON_POISON_OPTIONS as readonly string[]).includes(saved.weaponPoison)
-			) {
-				weaponPoison = saved.weaponPoison;
-			}
-			if (typeof saved.startingAdrenaline === 'number') {
-				startingAdrenaline = saved.startingAdrenaline;
-			}
-			if (typeof saved.hasRingOfVigour === 'boolean') hasRingOfVigour = saved.hasRingOfVigour;
-			if (typeof saved.hasFuryOfTheSmall === 'boolean') {
-				hasFuryOfTheSmall = saved.hasFuryOfTheSmall;
-			}
-
-			if (
-				Array.isArray(saved.timelinePlacements) &&
-				saved.timelinePlacements.every(
-					(p) =>
-						p &&
-						typeof p.id === 'string' &&
-						typeof p.abilityName === 'string' &&
-						typeof p.startTick === 'number'
-				)
-			) {
-				timelinePlacements = saved.timelinePlacements;
-			}
-			if (typeof saved.timelineStyleFilterEnabled === 'boolean') {
-				timelineStyleFilterEnabled = saved.timelineStyleFilterEnabled;
-			}
-			if (typeof saved.timelineLength === 'number') timelineLength = saved.timelineLength;
-		} catch {
-			// Corrupt or pre-format localStorage entry -- ignore and start fresh rather than
-			// throwing on load.
-		} finally {
-			hasRestored = true;
+	function applyShareableState(state: Partial<ShareableState>) {
+		if (typeof state.selectedBossName === 'string') selectedBossName = state.selectedBossName;
+		if (Array.isArray(state.setups) && state.setups.length > 0 && state.setups.every(isValidSetup)) {
+			setups = state.setups;
+			activeSetupIndex =
+				typeof state.activeSetupIndex === 'number' &&
+				state.activeSetupIndex >= 0 &&
+				state.activeSetupIndex < setups.length
+					? state.activeSetupIndex
+					: 0;
 		}
+	}
+
+	async function shareLoadout() {
+		shareStatus = 'copying';
+		try {
+			const state: ShareableState = {
+				setups: $state.snapshot(setups),
+				activeSetupIndex,
+				selectedBossName
+			};
+			const encoded = await encodeShareState(state);
+			const url = new URL(window.location.href);
+			url.search = '';
+			url.searchParams.set(SHARE_QUERY_PARAM, encoded);
+			await navigator.clipboard.writeText(url.toString());
+			window.history.replaceState(null, '', url);
+			shareStatus = 'copied';
+		} catch {
+			shareStatus = 'error';
+		} finally {
+			setTimeout(() => (shareStatus = 'idle'), 2000);
+		}
+	}
+
+	onMount(() => {
+		(async () => {
+			const url = new URL(window.location.href);
+			const shared = url.searchParams.get(SHARE_QUERY_PARAM);
+			if (shared) {
+				try {
+					const state = await decodeShareState<Partial<ShareableState>>(shared);
+					applyShareableState(state);
+					hasRestored = true;
+					return;
+				} catch {
+					// Corrupt or unparseable share link -- fall through to local persistence instead.
+				}
+			}
+
+			try {
+				const raw = localStorage.getItem(PERSISTENCE_KEY);
+				if (!raw) return;
+				const saved: Partial<PersistedState> = JSON.parse(raw);
+
+				if (typeof saved.hiscoresPlayerName === 'string') {
+					hiscoresPlayerName = saved.hiscoresPlayerName;
+				}
+				applyShareableState(saved);
+			} catch {
+				// Corrupt or pre-format localStorage entry -- ignore and start fresh rather than
+				// throwing on load.
+			} finally {
+				hasRestored = true;
+			}
+		})();
 	});
 
 	// Saves on every change, but only once restore has run -- otherwise the initial default
 	// values would overwrite a real saved snapshot before onMount gets a chance to apply it.
 	$effect(() => {
 		const snapshot: PersistedState = {
-			mageLevel,
-			rangedLevel,
-			attackLevel,
-			strengthLevel,
-			defenceLevel,
-			necromancyLevel,
+			setups,
+			activeSetupIndex,
 			hiscoresPlayerName,
-			selectedBoostNames,
-			selectedBossName,
-			prayerMode,
-			selectedPrayerNames,
-			mainHandWeaponName,
-			offHandWeaponName,
-			ammoName,
-			headArmourName,
-			torsoArmourName,
-			legsArmourName,
-			handsArmourName,
-			feetArmourName,
-			shieldName,
-			capeArmourName,
-			neckArmourName,
-			ringArmourName,
-			selectedSpellName,
-			hasStatiusWarhammer,
-			hasVulnBomb,
-			hasSmokeCloud,
-			weaponPoison,
-			startingAdrenaline,
-			hasRingOfVigour,
-			hasFuryOfTheSmall,
-			timelinePlacements,
-			timelineStyleFilterEnabled,
-			timelineLength
+			selectedBossName
 		};
 		if (!hasRestored) return;
 		localStorage.setItem(PERSISTENCE_KEY, JSON.stringify(snapshot));
 	});
 
 	const spellsForLevel = $derived(
-		spells.filter((s) => s.level <= mageLevel).sort((a, b) => a.name.localeCompare(b.name))
+		spells
+			.filter((s) => s.level <= activeSetup.mageLevel)
+			.sort((a, b) => a.name.localeCompare(b.name))
 	);
-	const selectedSpell = $derived(spells.find((s) => s.name === selectedSpellName) ?? null);
+	const selectedSpell = $derived(
+		spells.find((s) => s.name === activeSetup.selectedSpellName) ?? null
+	);
 
 	// --- Ability damage calculation, derived from equipped Main Hand weapon's combat style ---
 	const combatStyle = $derived<CombatStyle | null>(mainHandWeapon?.combatStyle ?? null);
@@ -797,17 +838,25 @@
 		}
 	});
 
-	// --- Rotation timeline ---
-	let timelinePlacements: TimelinePlacement[] = $state([]);
-	let timelineStyleFilterEnabled: boolean = $state(true);
-	let timelineLength: number = $state(100);
-
 	const adTotal = $derived(result.value?.total ?? 0);
 	const timelineGearContext = $derived<GearContext>({
 		isTwoHanded: mainHandIsTwoHanded,
 		hasOffHandWeapon: !!offHandWeapon,
 		equippedCapeName: capeArmour?.name ?? null
 	});
+
+	// How many pieces of each armour set (by Armour.setName) are currently equipped -- generalized
+	// across every set-effect armour (Vestments of havoc today, ~10 more later), derived entirely
+	// from what's already equipped rather than a manual toggle. Feeds Timeline's set-effect
+	// Modifiers (see ModifierContext.setPieceCounts).
+	const setPieceCounts = $derived.by(() => {
+		const counts: Record<string, number> = {};
+		for (const piece of equippedArmourPieces) {
+			counts[piece.setName] = (counts[piece.setName] ?? 0) + 1;
+		}
+		return counts;
+	});
+	const hasMeleeWeaponEquipped = $derived(mainHandWeapon?.combatStyle === 'melee');
 
 	// --- Accuracy, per https://runescape.wiki/w/Combat_Stats ---
 	// Weapon accuracy is main-hand only -- off-hand weapons don't contribute a separate
@@ -842,20 +891,366 @@
 						: selectedBoss.affinityMagic;
 		return hitChance(affinity, totalAccuracy, armourRating);
 	});
+
+	// Keyed map form of hitChanceValue for damageByTick's `hitChanceByStyle` param -- a setup only
+	// ever has one combat style (from its Main Hand weapon), so this is always at most one entry,
+	// but damageByTick's signature is keyed by style since a single call site (like this one) could
+	// in principle be asked about any style. Empty (defaults every style to 100%, i.e. no change)
+	// until both a combat style and a target are selected.
+	const hitChanceByStyle = $derived<Partial<Record<CombatStyle, number>>>(
+		combatStyle && hitChanceValue !== null ? { [combatStyle]: hitChanceValue } : {}
+	);
+
+	// --- Multi-setup damage overlay ---
+	// Re-derives ability damage (AD total, gear context, set piece counts) for EVERY setup, not
+	// just the active one -- so the overlay chart below can plot each setup's own rotation against
+	// its own gear, independent of whichever tab is currently open. This mirrors the single-setup
+	// "Ability damage calculation" derivation chain above (equippedArmourPieces -> totalDamageBonus
+	// -> skillLevelForStyle -> weaponConfig -> calculateAbilityDamage -> AD total) but as a plain
+	// function over an arbitrary Setup, since $derived can't be parameterized per array element.
+	function adTotalForSetup(setup: Setup): number {
+		const mhWeapon = weapons.find((w) => w.name === setup.mainHandWeaponName) ?? null;
+		const ohWeapon = weapons.find((w) => w.name === setup.offHandWeaponName) ?? null;
+		const style = mhWeapon?.combatStyle ?? null;
+		if (!style) return 0;
+		const isTwoHanded = mhWeapon?.slot === 'twoHanded';
+
+		const pieces = [
+			armour.find((a) => a.name === setup.headArmourName),
+			armour.find((a) => a.name === setup.torsoArmourName),
+			armour.find((a) => a.name === setup.legsArmourName),
+			armour.find((a) => a.name === setup.handsArmourName),
+			armour.find((a) => a.name === setup.feetArmourName),
+			armour.find((a) => a.name === setup.shieldName),
+			armour.find((a) => a.name === setup.capeArmourName),
+			armour.find((a) => a.name === setup.neckArmourName),
+			armour.find((a) => a.name === setup.ringArmourName)
+		].filter((piece): piece is Armour => piece !== undefined);
+
+		const bonusField = STYLE_BONUS_FIELD[style];
+		const totalBonus = pieces.reduce((sum, piece) => sum + Math.floor(piece[bonusField]), 0);
+
+		const setupPrayers = [
+			setup.selectedPrayerNames.accuracy,
+			setup.selectedPrayerNames.damage,
+			setup.selectedPrayerNames.armour
+		]
+			.filter((name, index, all) => name !== null && all.indexOf(name) === index)
+			.map((name) => prayers.find((p) => p.name === name))
+			.filter((p) => p !== undefined)
+			.filter((p) => p.style === style || p.style === null);
+		const damagePercentBonus = setupPrayers.reduce((sum, p) => sum + p.damagePercentBonus, 0);
+
+		const levelFor = (skill: BoostableSkill) => {
+			const base =
+				skill === 'attack'
+					? setup.attackLevel
+					: skill === 'strength'
+						? setup.strengthLevel
+						: skill === 'defence'
+							? setup.defenceLevel
+							: skill === 'ranged'
+								? setup.rangedLevel
+								: skill === 'magic'
+									? setup.mageLevel
+									: setup.necromancyLevel;
+			const boosts = skillBoosts.filter((b) => setup.selectedBoostNames.includes(b.name));
+			return boostedLevel(base, skill, boosts);
+		};
+		const skillLevel =
+			style === 'magic'
+				? levelFor('magic')
+				: style === 'ranged'
+					? levelFor('ranged')
+					: style === 'melee'
+						? levelFor('strength')
+						: 0;
+
+		const weaponConfigForSetup: WeaponConfig | null = mhWeapon
+			? isTwoHanded
+				? { kind: 'twoHanded', tier: mhWeapon.tier }
+				: { kind: 'dualWield', mainHandTier: mhWeapon.tier, offHandTier: ohWeapon?.tier ?? 0 }
+			: null;
+		if (!weaponConfigForSetup) return 0;
+
+		try {
+			let styleTier: number | undefined;
+			if (style === 'magic') {
+				styleTier = spells.find((s) => s.name === setup.selectedSpellName)?.level ?? 0;
+			} else if (style === 'ranged') {
+				styleTier = ammo.find((a) => a.name === setup.ammoName)?.tier ?? 0;
+			}
+			const raw = calculateAbilityDamage({
+				style,
+				weapon: weaponConfigForSetup,
+				level: skillLevel,
+				bonus: totalBonus,
+				styleTier
+			});
+			const multiplier = 1 + damagePercentBonus / 100;
+			return multiplier === 1 ? raw.total : Math.floor(raw.total * multiplier);
+		} catch {
+			return 0;
+		}
+	}
+
+	// Mirrors hitChanceValue above but for an arbitrary Setup (see adTotalForSetup) -- each setup's
+	// own accuracy (weapon + skill bonus + hybrid nerf) against the SAME globally-shared selected
+	// boss, since comparing setups only makes sense against one target.
+	function hitChanceForSetup(setup: Setup): Partial<Record<CombatStyle, number>> {
+		const style = combatStyleForSetup(setup);
+		if (!style || !selectedBoss) return {};
+
+		const mhWeapon = weapons.find((w) => w.name === setup.mainHandWeaponName) ?? null;
+		const weaponAcc = mhWeapon?.accuracy ?? 0;
+
+		const pieces = setPieceArmourForSetup(setup);
+
+		const levelFor = (skill: BoostableSkill) => {
+			const base =
+				skill === 'attack'
+					? setup.attackLevel
+					: skill === 'ranged'
+						? setup.rangedLevel
+						: setup.mageLevel;
+			const boosts = skillBoosts.filter((b) => setup.selectedBoostNames.includes(b.name));
+			return boostedLevel(base, skill, boosts);
+		};
+		const setupPrayers = [
+			setup.selectedPrayerNames.accuracy,
+			setup.selectedPrayerNames.damage,
+			setup.selectedPrayerNames.armour
+		]
+			.filter((name, index, all) => name !== null && all.indexOf(name) === index)
+			.map((name) => prayers.find((p) => p.name === name))
+			.filter((p) => p !== undefined)
+			.filter((p) => p.style === style || p.style === null);
+		const prayerAccuracyLevelBonus = setupPrayers.reduce((sum, p) => sum + p.accuracyLevelBonus, 0);
+
+		const accuracySkillLvl =
+			style === 'magic'
+				? levelFor('magic') + prayerAccuracyLevelBonus
+				: style === 'ranged'
+					? levelFor('ranged') + prayerAccuracyLevelBonus
+					: style === 'melee'
+						? levelFor('attack') + prayerAccuracyLevelBonus
+						: 0;
+
+		const totalAcc =
+			weaponAcc + Math.floor(accuracySkillBonus(accuracySkillLvl)) + hybridNerf(style, pieces);
+
+		const armourRating = targetArmourRating(selectedBoss.armour, selectedBoss.defenceLevel);
+		const affinity =
+			style === 'necromancy'
+				? NECROMANCY_AFFINITY
+				: style === 'melee'
+					? selectedBoss.affinityMelee
+					: style === 'ranged'
+						? selectedBoss.affinityRanged
+						: selectedBoss.affinityMagic;
+
+		return { [style]: hitChance(affinity, totalAcc, armourRating) };
+	}
+
+	function setPieceArmourForSetup(setup: Setup): Armour[] {
+		return [
+			armour.find((a) => a.name === setup.headArmourName),
+			armour.find((a) => a.name === setup.torsoArmourName),
+			armour.find((a) => a.name === setup.legsArmourName),
+			armour.find((a) => a.name === setup.handsArmourName),
+			armour.find((a) => a.name === setup.feetArmourName),
+			armour.find((a) => a.name === setup.shieldName),
+			armour.find((a) => a.name === setup.capeArmourName),
+			armour.find((a) => a.name === setup.neckArmourName),
+			armour.find((a) => a.name === setup.ringArmourName)
+		].filter((piece): piece is Armour => piece !== undefined);
+	}
+
+	function gearContextForSetup(setup: Setup): GearContext {
+		const mhWeapon = weapons.find((w) => w.name === setup.mainHandWeaponName) ?? null;
+		return {
+			isTwoHanded: mhWeapon?.slot === 'twoHanded',
+			hasOffHandWeapon: !!setup.offHandWeaponName,
+			equippedCapeName: setup.capeArmourName || null
+		};
+	}
+
+	function combatStyleForSetup(setup: Setup): CombatStyle | null {
+		return weapons.find((w) => w.name === setup.mainHandWeaponName)?.combatStyle ?? null;
+	}
+
+	function hasMeleeWeaponEquippedForSetup(setup: Setup): boolean {
+		return combatStyleForSetup(setup) === 'melee';
+	}
+
+	function setPieceCountsForSetup(setup: Setup): Record<string, number> {
+		const pieces = [
+			armour.find((a) => a.name === setup.headArmourName),
+			armour.find((a) => a.name === setup.torsoArmourName),
+			armour.find((a) => a.name === setup.legsArmourName),
+			armour.find((a) => a.name === setup.handsArmourName),
+			armour.find((a) => a.name === setup.feetArmourName),
+			armour.find((a) => a.name === setup.shieldName),
+			armour.find((a) => a.name === setup.capeArmourName),
+			armour.find((a) => a.name === setup.neckArmourName),
+			armour.find((a) => a.name === setup.ringArmourName)
+		].filter((piece): piece is Armour => piece !== undefined);
+		const counts: Record<string, number> = {};
+		for (const piece of pieces) counts[piece.setName] = (counts[piece.setName] ?? 0) + 1;
+		return counts;
+	}
+
+	const SETUP_LINE_COLORS = [
+		'#f4d78c',
+		'#7fb3d5',
+		'#d97757',
+		'#8fc98f',
+		'#c98fc9',
+		'#e0e07a',
+		'#7ad4c9',
+		'#e08fa0'
+	];
+
+	function colorForSetupIndex(index: number): string {
+		return SETUP_LINE_COLORS[index % SETUP_LINE_COLORS.length];
+	}
+
+	// One damage + adrenaline series per setup, using each setup's OWN gear/AD/timeline -- not the
+	// active one's -- so the overlay charts plot every setup's actual rotation simultaneously.
+	const setupSeries = $derived(
+		setups.map((setup, index) => {
+			const gear = gearContextForSetup(setup);
+			const setPieceCounts = setPieceCountsForSetup(setup);
+			const series = computeDamageSeries(
+				setup.timelinePlacements,
+				abilities,
+				adTotalForSetup(setup),
+				gear,
+				setup.timelineLength,
+				setPieceCounts,
+				hitChanceForSetup(setup)
+			);
+			const adrenalineStates = resolveAdrenaline(
+				setup.timelinePlacements,
+				abilities,
+				combatStyleForSetup(setup),
+				setup.startingAdrenaline,
+				setup.timelineLength,
+				setup.hasRingOfVigour,
+				setup.hasFuryOfTheSmall,
+				setPieceCounts,
+				hasMeleeWeaponEquippedForSetup(setup),
+				gear
+			);
+			return {
+				id: setup.id,
+				label: setup.label,
+				color: colorForSetupIndex(index),
+				...series,
+				adrenaline: adrenalineStates.map((s) => s.value)
+			};
+		})
+	);
 </script>
 
 <header class="hud-title">
-	<h1>RS3 Ability Damage Calculator</h1>
-	<p>
-		Formulas from <a href="https://runescape.wiki/w/Ability_damage" target="_blank" rel="noreferrer"
-			>runescape.wiki</a
-		>.
-	</p>
+	<div class="hud-title-text">
+		<h1>RS3 Ability Damage Calculator</h1>
+		<p>
+			Formulas from
+			<a href="https://runescape.wiki/w/Ability_damage" target="_blank" rel="noreferrer"
+				>runescape.wiki</a
+			>.
+		</p>
+	</div>
+	<button type="button" class="share-button" onclick={shareLoadout} disabled={shareStatus === 'copying'}>
+		{#if shareStatus === 'copied'}
+			Link copied!
+		{:else if shareStatus === 'error'}
+			Copy failed
+		{:else}
+			Share loadout
+		{/if}
+	</button>
 </header>
 
 <div class="hud-columns">
 	<div class="hud-column">
-		<div class="hud-window">
+		<div class="setup-panel-group">
+			<nav class="setup-tabs">
+				{#each setups as setup, index (setup.id)}
+					<button
+						type="button"
+						class="setup-tab"
+						class:active={index === activeSetupIndex}
+						onclick={() => (activeSetupIndex = index)}
+					>
+						{setup.label}
+					</button>
+				{/each}
+				<button type="button" class="setup-tab-add" title="Add setup" onclick={addSetup}>
+					+
+				</button>
+			</nav>
+
+			<div class="hud-window">
+			<div class="setup-header">
+				{#if renamingSetupId === activeSetup.id}
+					<input
+						type="text"
+						class="setup-header-rename"
+						bind:value={renameDraft}
+						use:focusOnMount
+						onblur={() => commitRenameSetup(activeSetup)}
+						onkeydown={(e) => {
+							if (e.key === 'Enter') commitRenameSetup(activeSetup);
+							else if (e.key === 'Escape') cancelRenamingSetup();
+						}}
+					/>
+				{:else}
+					<button
+						type="button"
+						class="setup-header-name"
+						ondblclick={() => startRenamingSetup(activeSetup)}
+						title="Double-click to rename"
+					>
+						{activeSetup.label}
+					</button>
+					<button
+						type="button"
+						class="setup-header-icon-btn"
+						title="Rename loadout"
+						onclick={() => startRenamingSetup(activeSetup)}
+					>
+						<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+							<path
+								fill="currentColor"
+								d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"
+							/>
+						</svg>
+					</button>
+				{/if}
+				{#if setups.length > 1}
+					<button
+						type="button"
+						class="setup-header-icon-btn setup-header-delete"
+						title="Delete loadout {activeSetup.label}"
+						onclick={() => {
+							const index = activeSetupIndex;
+							setups.splice(index, 1);
+							if (activeSetupIndex >= setups.length) activeSetupIndex = setups.length - 1;
+						}}
+					>
+						<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+							<path
+								fill="currentColor"
+								d="M9 3a1 1 0 0 0-1 1v1H4v2h1.1l.9 12.1A2 2 0 0 0 8 21h8a2 2 0 0 0 2-1.9L18.9 7H20V5h-4V4a1 1 0 0 0-1-1H9zm1 2h4v1h-4V5zM8.1 7h7.8l-.86 11.6a.5.5 0 0 1-.5.4H9.46a.5.5 0 0 1-.5-.4L8.1 7zM10 9v9h1.5V9H10zm3.5 0v9H15V9h-1.5z"
+							/>
+						</svg>
+					</button>
+				{/if}
+			</div>
+
 			<nav class="hud-tabs">
 				<button
 					type="button"
@@ -943,7 +1338,7 @@
 					<h3 class="boost-list-heading">Boosts</h3>
 					<ul class="boost-list">
 						{#each skillBoosts as boost (boost.name)}
-							{@const active = selectedBoostNames.includes(boost.name)}
+							{@const active = activeSetup.selectedBoostNames.includes(boost.name)}
 							<li>
 								<button
 									type="button"
@@ -975,7 +1370,7 @@
 										style:anchor-name="--mainHand-anchor"
 										title={mainHandWeapon ? '' : slot.label}
 										onclick={() => {
-											mainHandWeaponName = '';
+											activeSetup.mainHandWeaponName = '';
 											pendingItemPick = '';
 										}}
 										onmouseenter={() => (hoveredSlot = 'mainHand')}
@@ -999,8 +1394,8 @@
 										style:anchor-name="--offHand-anchor"
 										title={offHandWeapon || shield ? '' : slot.label}
 										onclick={() => {
-											offHandWeaponName = '';
-											shieldName = '';
+											activeSetup.offHandWeaponName = '';
+											activeSetup.shieldName = '';
 											pendingItemPick = '';
 										}}
 										onmouseenter={() => (hoveredSlot = 'offHand')}
@@ -1029,7 +1424,7 @@
 										style:anchor-name="--ammo-anchor"
 										title={equippedAmmo ? '' : slot.label}
 										onclick={() => {
-											ammoName = '';
+											activeSetup.ammoName = '';
 											pendingItemPick = '';
 										}}
 										onmouseenter={() => (hoveredSlot = 'ammo')}
@@ -1053,7 +1448,7 @@
 										style:anchor-name="--head-anchor"
 										title={headArmour ? '' : slot.label}
 										onclick={() => {
-											headArmourName = '';
+											activeSetup.headArmourName = '';
 											pendingItemPick = '';
 										}}
 										onmouseenter={() => (hoveredSlot = 'head')}
@@ -1072,7 +1467,7 @@
 										style:anchor-name="--torso-anchor"
 										title={torsoArmour ? '' : slot.label}
 										onclick={() => {
-											torsoArmourName = '';
+											activeSetup.torsoArmourName = '';
 											pendingItemPick = '';
 										}}
 										onmouseenter={() => (hoveredSlot = 'torso')}
@@ -1096,7 +1491,7 @@
 										style:anchor-name="--legs-anchor"
 										title={legsArmour ? '' : slot.label}
 										onclick={() => {
-											legsArmourName = '';
+											activeSetup.legsArmourName = '';
 											pendingItemPick = '';
 										}}
 										onmouseenter={() => (hoveredSlot = 'legs')}
@@ -1115,7 +1510,7 @@
 										style:anchor-name="--hands-anchor"
 										title={handsArmour ? '' : slot.label}
 										onclick={() => {
-											handsArmourName = '';
+											activeSetup.handsArmourName = '';
 											pendingItemPick = '';
 										}}
 										onmouseenter={() => (hoveredSlot = 'hands')}
@@ -1139,7 +1534,7 @@
 										style:anchor-name="--feet-anchor"
 										title={feetArmour ? '' : slot.label}
 										onclick={() => {
-											feetArmourName = '';
+											activeSetup.feetArmourName = '';
 											pendingItemPick = '';
 										}}
 										onmouseenter={() => (hoveredSlot = 'feet')}
@@ -1158,7 +1553,7 @@
 										style:anchor-name="--cape-anchor"
 										title={capeArmour ? '' : slot.label}
 										onclick={() => {
-											capeArmourName = '';
+											activeSetup.capeArmourName = '';
 											pendingItemPick = '';
 										}}
 										onmouseenter={() => (hoveredSlot = 'cape')}
@@ -1177,7 +1572,7 @@
 										style:anchor-name="--necklace-anchor"
 										title={neckArmour ? '' : slot.label}
 										onclick={() => {
-											neckArmourName = '';
+											activeSetup.neckArmourName = '';
 											pendingItemPick = '';
 										}}
 										onmouseenter={() => (hoveredSlot = 'necklace')}
@@ -1196,7 +1591,7 @@
 										style:anchor-name="--ring-anchor"
 										title={ringArmour ? '' : slot.label}
 										onclick={() => {
-											ringArmourName = '';
+											activeSetup.ringArmourName = '';
 											pendingItemPick = '';
 										}}
 										onmouseenter={() => (hoveredSlot = 'ring')}
@@ -1401,7 +1796,7 @@
 						<button
 							type="button"
 							class="prayer-mode-button"
-							class:active={prayerMode === 'prayers'}
+							class:active={activeSetup.prayerMode === 'prayers'}
 							onclick={() => setPrayerMode('prayers')}
 						>
 							Prayers
@@ -1409,16 +1804,16 @@
 						<button
 							type="button"
 							class="prayer-mode-button"
-							class:active={prayerMode === 'curses'}
+							class:active={activeSetup.prayerMode === 'curses'}
 							onclick={() => setPrayerMode('curses')}
 						>
 							Ancient Curses
 						</button>
 					</div>
 					<div class="prayer-grid">
-						{#each prayers.filter((p) => p.isCurse === (prayerMode === 'curses')) as prayer (prayer.name)}
+						{#each prayers.filter((p) => p.isCurse === (activeSetup.prayerMode === 'curses')) as prayer (prayer.name)}
 							{@const isActive = prayer.slots.every(
-								(slot) => selectedPrayerNames[slot] === prayer.name
+								(slot) => activeSetup.selectedPrayerNames[slot] === prayer.name
 							)}
 							<button
 								type="button"
@@ -1437,11 +1832,11 @@
 						<section class="config-section">
 							<h3>Spell</h3>
 							<label class="config-field">
-								Pick a spell (level ≤ {mageLevel})
+								Pick a spell (level ≤ {activeSetup.mageLevel})
 								<Combobox
 									id="spell-combobox"
 									options={spellsForLevel}
-									bind:value={selectedSpellName}
+									bind:value={activeSetup.selectedSpellName}
 									getValue={(s) => s.name}
 									getLabel={(s) => `${s.name} (lvl ${s.level})`}
 									placeholder="Type to search spells..."
@@ -1461,15 +1856,15 @@
 						<section class="config-section">
 							<h3>Effects</h3>
 							<label class="config-checkbox">
-								<input type="checkbox" bind:checked={hasStatiusWarhammer} />
+								<input type="checkbox" bind:checked={activeSetup.hasStatiusWarhammer} />
 								Statius Warhammer
 							</label>
 							<label class="config-checkbox">
-								<input type="checkbox" bind:checked={hasVulnBomb} />
+								<input type="checkbox" bind:checked={activeSetup.hasVulnBomb} />
 								Vuln Bomb
 							</label>
 							<label class="config-checkbox">
-								<input type="checkbox" bind:checked={hasSmokeCloud} />
+								<input type="checkbox" bind:checked={activeSetup.hasSmokeCloud} />
 								Smoke Cloud
 							</label>
 						</section>
@@ -1478,7 +1873,7 @@
 							<h3>Weapon Poison</h3>
 							<label class="config-field">
 								Potency
-								<select bind:value={weaponPoison}>
+								<select bind:value={activeSetup.weaponPoison}>
 									{#each WEAPON_POISON_OPTIONS as option (option)}
 										<option value={option}>{option}</option>
 									{/each}
@@ -1489,11 +1884,11 @@
 						<section class="config-section">
 							<h3>Global Unlocks</h3>
 							<label class="config-checkbox">
-								<input type="checkbox" bind:checked={hasRingOfVigour} />
+								<input type="checkbox" bind:checked={activeSetup.hasRingOfVigour} />
 								Ring of Vigour
 							</label>
 							<label class="config-checkbox">
-								<input type="checkbox" bind:checked={hasFuryOfTheSmall} />
+								<input type="checkbox" bind:checked={activeSetup.hasFuryOfTheSmall} />
 								Fury of the Small
 							</label>
 						</section>
@@ -1506,9 +1901,11 @@
 									type="number"
 									min="0"
 									max="100"
-									value={startingAdrenaline}
+									value={activeSetup.startingAdrenaline}
 									oninput={(e) =>
-										(startingAdrenaline = Number((e.target as HTMLInputElement).value))}
+										(activeSetup.startingAdrenaline = Number(
+											(e.target as HTMLInputElement).value
+										))}
 								/>
 							</label>
 						</section>
@@ -1516,6 +1913,7 @@
 				{/if}
 			</div>
 		</div>
+	</div>
 	</div>
 
 	<div class="hud-column">
@@ -1577,18 +1975,24 @@
 </div>
 
 <div class="timeline-section">
-	<Timeline
-		{abilities}
-		{combatStyle}
-		{adTotal}
-		{startingAdrenaline}
-		{hasRingOfVigour}
-		{hasFuryOfTheSmall}
-		gearContext={timelineGearContext}
-		bind:placements={timelinePlacements}
-		bind:styleFilterEnabled={timelineStyleFilterEnabled}
-		bind:timelineLength
-	/>
+	{#key activeSetup.id}
+		<Timeline
+			{abilities}
+			{combatStyle}
+			{adTotal}
+			startingAdrenaline={activeSetup.startingAdrenaline}
+			hasRingOfVigour={activeSetup.hasRingOfVigour}
+			hasFuryOfTheSmall={activeSetup.hasFuryOfTheSmall}
+			gearContext={timelineGearContext}
+			{setPieceCounts}
+			{hasMeleeWeaponEquipped}
+			bind:placements={activeSetup.timelinePlacements}
+			bind:styleFilterEnabled={activeSetup.timelineStyleFilterEnabled}
+			bind:timelineLength={activeSetup.timelineLength}
+			overlaySeries={setupSeries}
+			{hitChanceByStyle}
+		/>
+	{/key}
 </div>
 
 <!-- Guarantees scroll room below the page content so an open combobox popover anchored to an
@@ -1619,6 +2023,34 @@
 		max-width: 90rem;
 		margin: 0 auto;
 		padding: 1.5rem 1.5rem 0;
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 1rem;
+	}
+
+	.share-button {
+		flex-shrink: 0;
+		padding: 0.5rem 1rem;
+		background: #2e2517;
+		border: 2px solid #5a4a2c;
+		border-radius: 6px;
+		color: #f4d78c;
+		font: inherit;
+		font-weight: 600;
+		font-size: 0.85rem;
+		cursor: pointer;
+		white-space: nowrap;
+	}
+
+	.share-button:hover:not(:disabled) {
+		background: #3a2e1c;
+		border-color: #f4d78c;
+	}
+
+	.share-button:disabled {
+		cursor: default;
+		opacity: 0.7;
 	}
 
 	.hud-title h1 {
@@ -1683,6 +2115,126 @@
 			0 0 0 1px #0a0704 inset,
 			0 4px 12px rgba(0, 0, 0, 0.5);
 		overflow: hidden;
+	}
+
+	/* .hud-column's own `gap` (meant for spacing between unrelated panels) would otherwise shove
+	   the tabs away from the container they belong to -- this group opts out of that gap so the
+	   tabs sit flush against the panel's top edge, reading as extra material growing directly out
+	   of it rather than a separate floating row above it. */
+	.setup-panel-group {
+		display: flex;
+		flex-direction: column;
+	}
+
+	/* No background of its own -- tabs sit directly on the page background, immediately above
+	   the panel. */
+	.setup-tabs {
+		display: flex;
+		align-items: flex-end;
+		gap: 0.4rem;
+		flex-wrap: wrap;
+		padding: 0 0.6rem;
+	}
+
+	.setup-tab {
+		position: relative;
+		padding: 0.4rem 0.9rem;
+		background: #1a140d;
+		border: 2px solid #5a4a2c;
+		border-bottom: none;
+		border-radius: 6px 6px 0 0;
+		color: #a89468;
+		font: inherit;
+		font-weight: 600;
+		font-size: 0.85rem;
+		cursor: pointer;
+	}
+
+	.setup-tab:hover {
+		background: #241d14;
+		color: #e8dcc4;
+	}
+
+	.setup-tab.active {
+		background: #2e2517;
+		border-color: #5a4a2c;
+		color: #f4d78c;
+	}
+
+	.setup-tab-add {
+		padding: 0.3rem 0.6rem;
+		background: transparent;
+		border: 2px dashed #5a4a2c;
+		border-bottom: none;
+		border-radius: 6px 6px 0 0;
+		color: #d8b566;
+		font: inherit;
+		font-weight: 700;
+		cursor: pointer;
+		align-self: flex-end;
+	}
+
+	.setup-tab-add:hover {
+		background: #241d14;
+		border-color: #f4d78c;
+		color: #f4d78c;
+	}
+
+	.setup-header {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.6rem 0.75rem;
+		background: #2e2517;
+		border-bottom: 2px solid #5a4a2c;
+	}
+
+	.setup-header-name {
+		font: inherit;
+		font-size: 1rem;
+		font-weight: 700;
+		color: #f4d78c;
+		background: transparent;
+		border: none;
+		padding: 0;
+		cursor: text;
+	}
+
+	.setup-header-rename {
+		font: inherit;
+		font-size: 1rem;
+		font-weight: 700;
+		color: #f4d78c;
+		background: #1a140d;
+		border: 1px solid #f4d78c;
+		border-radius: 4px;
+		padding: 0.15rem 0.4rem;
+		width: 12rem;
+	}
+
+	.setup-header-icon-btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0.3rem;
+		background: transparent;
+		border: none;
+		border-radius: 4px;
+		color: #a89468;
+		cursor: pointer;
+	}
+
+	.setup-header-icon-btn:hover {
+		background: #1a140d;
+		color: #f4d78c;
+	}
+
+	.setup-header-delete {
+		margin-left: auto;
+	}
+
+	.setup-header-delete:hover {
+		color: #f4a89a;
 	}
 
 	.hud-tabs {

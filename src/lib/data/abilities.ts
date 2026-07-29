@@ -33,6 +33,16 @@ export interface Ability {
 	 * value. null for abilities with one fixed damagePercent instead.
 	 */
 	damageVariants: Record<string, string> | null;
+	/**
+	 * For abilities whose HIT COUNT (not just total damage) depends on equipped gear -- currently
+	 * just the four igneous-cape ultimates (Overpower/Omnipower/Deadshot/Death Skulls: hitting more,
+	 * smaller-damage times when the matching igneous cape is worn). Keyed exactly like
+	 * `damageVariants` (equipment description -> value), indexed the same way via
+	 * `resolveDamagePercent`'s gear-matching logic. null for abilities whose hit count doesn't vary
+	 * by gear -- including ones that still have gear-dependent damageVariants for other reasons
+	 * (e.g. Adaptive Strike's dual-wield/two-handed damage split doesn't change its hit count).
+	 */
+	hitCountVariants: Record<string, number> | null;
 	/** Raw cooldown text as scraped, e.g. "20.4 seconds (34 ticks)" or "N/A". */
 	cooldownText: string;
 	/** Equipment requirement/note, e.g. "Two-handed", "None", or a description of which
@@ -42,6 +52,11 @@ export interface Ability {
 	membersOnly: boolean;
 	/** Path under /ability-icons relative to the static root. */
 	iconPath: string;
+	/** For per-weapon special attacks (type 'Special', excluding the generic "Weapon Special
+	 *  Attack"/"Essence of Finality" entries): the weapon(s) that trigger this exact special
+	 *  attack, e.g. ["Dragon dagger", "Superior dragon dagger"] both trigger "Draconic
+	 *  Puncture". null for all other abilities. */
+	weapons: string[] | null;
 }
 
 /**
@@ -73,12 +88,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '20.4 seconds (34 ticks)',
 		equipment: 'None',
 		description:
 			'Dive forward. Move up to 10 tiles towards tile. Can be cast during the global cooldown. Must be manually triggered during revolution combat.',
 		membersOnly: false,
-		iconPath: '/ability-icons/dive.png'
+		iconPath: '/ability-icons/dive.png',
+		weapons: null
 	},
 	{
 		name: 'Attack',
@@ -90,12 +107,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '120%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '1.8 seconds (3 ticks)',
 		equipment: 'Any',
 		description:
 			'Attack the target. 110%-130% Melee damage. Generates 1 Bloodlust stack. Generates 9% Adrenaline. Automatically triggered during combat.',
 		membersOnly: false,
-		iconPath: '/ability-icons/attack.png'
+		iconPath: '/ability-icons/attack.png',
+		weapons: null
 	},
 	{
 		name: 'Assault',
@@ -107,12 +126,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '560% (720% with 4 )',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '6 seconds (10 ticks)',
 		equipment: 'Any',
 		description:
 			'Strike at the target multiple times. Attack 4 times over 4.2s (7 ticks). 130%-150% Melee damage per hit. Channelled. Bloodlust (consumes 4 Bloodlust stacks) Deals 170%-190% Melee damage per hit. Damage is 75% effective in PvP. Can move while channelling.',
 		membersOnly: false,
-		iconPath: '/ability-icons/assault.png'
+		iconPath: '/ability-icons/assault.png',
+		weapons: null
 	},
 	{
 		name: 'Adaptive Strike',
@@ -124,12 +145,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: null,
 		damageVariants: { 'Dual wield': '135%', 'Main hand, no offhand': '130%', 'Two-handed': '130%' },
+		hitCountVariants: null,
 		cooldownText: '5.4 seconds (9 ticks)',
 		equipment: 'Varies (see damageVariants)',
 		description:
 			'Channel your weapons form into an adaptive strike. 60%-75% Melee damage per hit. 2 hits. Generates 1 Bloodlust stack. Generates 12% Adrenaline. The ability changes based on your equipped weapon. 2h Swipe your weapon in front of you. 2x Strike at the target with both weapons.',
 		membersOnly: false,
-		iconPath: '/ability-icons/adaptive-strike.png'
+		iconPath: '/ability-icons/adaptive-strike.png',
+		weapons: null
 	},
 	{
 		name: 'Overpower',
@@ -141,12 +164,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: null,
 		damageVariants: { Any: '545%', 'Igneous Kal-Ket or Igneous Kal-Zuk': '620%' },
+		hitCountVariants: { Any: 1, 'Igneous Kal-Ket or Igneous Kal-Zuk': 2 },
 		cooldownText: '30 seconds (50 ticks)',
 		equipment: 'Varies (see damageVariants)',
 		description:
-			'Strike the target with a massive overhead swing. 520%-570% Melee damage. Damage is 55% effective in PvP.',
+			'Strike the target with a massive overhead swing. 520%-570% Melee damage (Igneous Kal-Ket or Igneous Kal-Zuk: 280%-340% Melee damage per hit, 2 hits). Damage is 55% effective in PvP.',
 		membersOnly: false,
-		iconPath: '/ability-icons/overpower.png'
+		iconPath: '/ability-icons/overpower.png',
+		weapons: null
 	},
 	{
 		name: 'Rend',
@@ -158,12 +183,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '150%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '10.2 seconds (17 ticks)',
 		equipment: 'Any',
 		description:
 			'Slice through the target. 135%-165% Melee damage. Generates 2 Bloodlust stacks. Generates 9% Adrenaline.',
 		membersOnly: false,
-		iconPath: '/ability-icons/rend.png'
+		iconPath: '/ability-icons/rend.png',
+		weapons: null
 	},
 	{
 		name: 'Fury',
@@ -175,12 +202,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '120%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '15 seconds (25 ticks)',
 		equipment: 'Any',
 		description:
 			'Swing your weapon at the target with fury. 110-130% melee ability damage. Increases the Critical Strike Chance of your next Melee attack by 25%. Generates 1 Bloodlust stack. Generates 9% Adrenaline.',
 		membersOnly: false,
-		iconPath: '/ability-icons/fury.png'
+		iconPath: '/ability-icons/fury.png',
+		weapons: null
 	},
 	{
 		name: 'Greater Fury',
@@ -192,12 +221,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '130%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '15 seconds (25 ticks)',
 		equipment: 'Any',
 		description:
 			'Strike at the target with unmatched fury. 120%-140% Melee damage. Your next Melee attack within 15s (25 ticks) is guaranteed to Critically Strike. Generates 1 Bloodlust stack. Generates 9% Adrenaline.',
 		membersOnly: true,
-		iconPath: '/ability-icons/greater-fury.png'
+		iconPath: '/ability-icons/greater-fury.png',
+		weapons: null
 	},
 	{
 		name: 'Backhand',
@@ -209,12 +240,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '100%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '15 seconds (25 ticks)',
 		equipment: 'Any',
 		description:
 			'Strike the target with the back of the hand. 95%-105% Melee damage. Stuns and Binds the target for 1.8s (3 ticks). (With Scare Tactics enabled) Knocks back the target by 1 tile. Generates 1 Bloodlust stack. Generates 9% Adrenaline. (With at least level 54 Attack) Maximum charges: 2. (After reading Scare Tactics) Customisation options available. (With Flanking perk) Invention perk: Flanking (rank [number]).',
 		membersOnly: false,
-		iconPath: '/ability-icons/backhand.png'
+		iconPath: '/ability-icons/backhand.png',
+		weapons: null
 	},
 	{
 		name: 'Hurricane',
@@ -226,12 +259,14 @@ export const abilities: Ability[] = [
 		target: 'Area',
 		damagePercent: '320% (405% with 4 )',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '20.4 seconds (34 ticks)',
 		equipment: 'Two-handed',
 		description:
 			'Spin on the spot with your weapon. 135%-165% Melee damage. 155%-185% Melee damage to the target and up to 9 additional enemies within 1 tile of you. Reduces the cooldown of Hurricane by 3s (5 ticks) for each enemy hit. 2 hits. Bloodlust (consumes 4 Bloodlust stacks) Third hit of 75%-95% Melee damage to the target and up to 9 additional enemies within 1 tile of you. Damage is 55% effective in PvP. Area targeting varies based on the attack range of your main-hand weapon.',
 		membersOnly: false,
-		iconPath: '/ability-icons/hurricane.png'
+		iconPath: '/ability-icons/hurricane.png',
+		weapons: null
 	},
 	{
 		name: 'Flurry',
@@ -243,12 +278,14 @@ export const abilities: Ability[] = [
 		target: 'Area',
 		damagePercent: '520% (up to 858% with 4 )',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '20.4 seconds (34 ticks)',
 		equipment: 'Dual wield',
 		description:
 			'Swing both weapons rapidly around you. Attack 8 times over 4.8s (8 ticks). 60%-70% Melee damage per hit to up to 8 enemies within 1 tile of you. Channelled. Stuns and Binds the target for 3.6s (6 ticks). Bloodlust (consumes 4 Bloodlust stacks) Deals 1% increased damage for each 1% Life Points the target is missing, up to a maximum of 65%. Area targeting varies based on the attack range of your main-hand weapon. Can move while channelling.',
 		membersOnly: false,
-		iconPath: '/ability-icons/flurry.png'
+		iconPath: '/ability-icons/flurry.png',
+		weapons: null
 	},
 	{
 		name: 'Greater Flurry',
@@ -260,12 +297,14 @@ export const abilities: Ability[] = [
 		target: 'Area',
 		damagePercent: '520% (up to 858% with 4 )',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '20.4 seconds (34 ticks)',
 		equipment: 'Dual wield',
 		description:
 			'Swing both weapons rapidly around you. Attack 8 times over 4.8s (8 ticks). 60%-70% Melee damage per hit to up to 8 enemies within 1 tile of you. Channelled. Stuns and Binds the target for 3.6s (6 ticks). Each attack extends the duration of Berserk by 0.6s (1 tick). Bloodlust (consumes 4 Bloodlust stacks) Deals 1% increased damage for each 1% Life Points the target is missing, up to a maximum of 65%. Area targeting varies based on the attack range of your main-hand weapon. Can move while channelling.',
 		membersOnly: true,
-		iconPath: '/ability-icons/greater-flurry.png'
+		iconPath: '/ability-icons/greater-flurry.png',
+		weapons: null
 	},
 	{
 		name: 'Dismember',
@@ -277,12 +316,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '240%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '24 seconds (40 ticks)',
 		equipment: 'Any',
 		description:
 			'Slice at the target causing them to Bleed. 25%-35% Melee damage per hit every 1.2s (2 ticks). 8 hits. Damage over time. Heals you for 4% of the damage dealt. Can be recast within 24s (40 ticks) of the previous cast. Second Cast: Stab the target, causing them to Bleed. Third Cast: Swing at the target causing them to Bleed.',
 		membersOnly: false,
-		iconPath: '/ability-icons/dismember.png'
+		iconPath: '/ability-icons/dismember.png',
+		weapons: null
 	},
 	{
 		name: 'Punish',
@@ -294,12 +335,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '120% (300% for targets below 50% life points)',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '24 seconds (40 ticks)',
 		equipment: 'Any',
 		description:
 			"Slash at the target unexpectedly. 110%-130% Melee damage. Generates 1 Bloodlust stack. Deals 2.5x damage if the target's Life Points are below 50%. Generates 9% Adrenaline.",
 		membersOnly: false,
-		iconPath: '/ability-icons/punish.png'
+		iconPath: '/ability-icons/punish.png',
+		weapons: null
 	},
 	{
 		name: 'Slaughter',
@@ -311,12 +354,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '540%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Any',
 		description:
 			'Stab the target, causing them to Bleed. 80%-100% Melee damage per hit every 1.8s (3 ticks). 6 hits. Damage over time. Heals for 6% of damage dealt. Third Cast: Swing at the target causing them to Bleed.',
 		membersOnly: false,
-		iconPath: '/ability-icons/slaughter.png'
+		iconPath: '/ability-icons/slaughter.png',
+		weapons: null
 	},
 	{
 		name: 'Barge',
@@ -328,12 +373,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '85%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '20.4 seconds (34 ticks)',
 		equipment: 'Any',
 		description:
 			'Run up and ram the target. Move up to 10 tiles towards the target. 75%-95% Melee damage. Clears Bound debuff. Binds the target for 6.6s (11 ticks). Generates 1 Bloodlust stack. Generates 9% Adrenaline.',
 		membersOnly: false,
-		iconPath: '/ability-icons/barge.png'
+		iconPath: '/ability-icons/barge.png',
+		weapons: null
 	},
 	{
 		name: 'Bladed Dive',
@@ -345,12 +392,14 @@ export const abilities: Ability[] = [
 		target: 'Area',
 		damagePercent: '85%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '20.4 seconds (34 ticks)',
 		equipment: 'Dual wield',
 		description:
 			'Dash forward striking the enemies around you. Move up to 10 tiles towards enemy or tile. 75%-95% Melee damage to the target and up to 8 additional enemies within 1 tile of you. Enemies hit will reset the cooldown of Bladed Dive if they die within 6s (10 ticks). Generates 9% Adrenaline. Can be cast during the global cooldown but will not generate adrenaline or deal damage. Must be manually triggered during revolution combat.',
 		membersOnly: true,
-		iconPath: '/ability-icons/bladed-dive.png'
+		iconPath: '/ability-icons/bladed-dive.png',
+		weapons: null
 	},
 	{
 		name: 'Greater Barge',
@@ -362,12 +411,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '85%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '20.4 seconds (34 ticks)',
 		equipment: 'Any',
 		description:
 			'Run up and ram the target. Move up to 10 tiles towards the target. 75%-95% Melee damage. Clears Bound debuff. Binds the target for 6.6s (11 ticks). Deals an additional 5%-7% Melee damage for every 0.6s (1 tick) since your last attack. After 4.8s (8 ticks) since your last attack, your next Channelled ability cast within 6s (10 ticks) is dealt as Damage over time. Generates 1 Bloodlust stack. Generates 9% Adrenaline. Maximum additional damage duration: 6s (10 ticks).',
 		membersOnly: true,
-		iconPath: '/ability-icons/greater-barge.png'
+		iconPath: '/ability-icons/greater-barge.png',
+		weapons: null
 	},
 	{
 		name: 'Pulverise',
@@ -379,12 +430,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '320%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '60 seconds (100 ticks)',
 		equipment: 'Two-handed',
 		description:
 			'Charge up a massive strike and pulverise the target. 300%-340% Melee damage. Applies Pulverised to the target for 30s (50 ticks). On killing blow: Generates 50% Adrenaline. Pulverised Reduced to dust. Reduces damage dealt by 25%.',
 		membersOnly: false,
-		iconPath: '/ability-icons/pulverise.png'
+		iconPath: '/ability-icons/pulverise.png',
+		weapons: null
 	},
 	{
 		name: 'Massacre',
@@ -396,12 +449,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '720%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Any',
 		description:
 			'Swing at the target causing them to Bleed. 110%-130% Melee damage on first hit. 100% Melee damage per hit every 2.4s (4 ticks). 7 hits. Damage over time. Heals for 12% of damage dealt.',
 		membersOnly: false,
-		iconPath: '/ability-icons/massacre.png'
+		iconPath: '/ability-icons/massacre.png',
+		weapons: null
 	},
 	{
 		name: 'Berserk',
@@ -413,12 +468,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '60 seconds (100 ticks)',
 		equipment: 'Any',
 		description:
 			'Go berserk, empowering yourself. Melee attacks deal 1.75x damage. Increases damage taken by 25%. Generates 4 Bloodlust stacks. Basic attacks and basic abilities generate 2x Bloodlust stack. Maximum number of Bloodlust stacks are increased by 4. Overpower: Cooldown reduced to 9s (15 ticks). 19.8s (33 ticks) duration.',
 		membersOnly: true,
-		iconPath: '/ability-icons/berserk.png'
+		iconPath: '/ability-icons/berserk.png',
+		weapons: null
 	},
 	{
 		name: 'Meteor Strike',
@@ -430,12 +487,14 @@ export const abilities: Ability[] = [
 		target: 'Area',
 		damagePercent: '235%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '60 seconds (100 ticks)',
 		equipment: 'Any',
 		description:
 			'Jump up and strike the ground. 220%-250% Melee damage to the target and up to 8 additional targets within 1 tile of you. Melee basic abilities generate 1.5x Adrenaline. Generates 4.5% Adrenaline every 0.6s (1 tick) while you have a Melee weapon equipped. 30s (50 ticks) duration. Area targeting varies based on the attack range of your main-hand weapon.',
 		membersOnly: false,
-		iconPath: '/ability-icons/meteor-strike.png'
+		iconPath: '/ability-icons/meteor-strike.png',
+		weapons: null
 	},
 	{
 		name: 'Chaos Roar',
@@ -447,12 +506,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '110%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '60 seconds (100 ticks)',
 		equipment: 'Any',
 		description:
 			'Release a savage war cry, empowering your next strike. 100%-120% Melee damage. Your next melee ability within 7.2s (12 ticks) deals 1.75x (PvP: 1.25x) base damage. Generates 1 Bloodlust stack. Generates 9% Adrenaline.',
 		membersOnly: true,
-		iconPath: '/ability-icons/chaos-roar.png'
+		iconPath: '/ability-icons/chaos-roar.png',
+		weapons: null
 	},
 	{
 		name: 'Escape',
@@ -464,12 +525,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '20.4 seconds (34 ticks)',
 		equipment: 'None',
 		description:
 			'Leap backwards to maintain range. Move backwards [number] tiles. (After reading a Double Escape codex) Maximum charges: 2. Distance varies based on the attack range of your main-hand ranged weapon. Can be cast during the global cooldown. Must be manually triggered during revolution combat.',
 		membersOnly: false,
-		iconPath: '/ability-icons/escape.png'
+		iconPath: '/ability-icons/escape.png',
+		weapons: null
 	},
 	{
 		name: 'Quiver ammo slot 1',
@@ -481,12 +544,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: "Pernix's quiver",
 		description:
 			'Select the ammo in slot 1 of your quiver. Ammo: [ammo] Can be cast during the global cooldown. Must be manually triggered during revolution combat.',
 		membersOnly: true,
-		iconPath: '/ability-icons/quiver-ammo-slot-1.png'
+		iconPath: '/ability-icons/quiver-ammo-slot-1.png',
+		weapons: null
 	},
 	{
 		name: 'Quiver ammo slot 2',
@@ -498,12 +563,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: "Pernix's quiver",
 		description:
 			'Select the ammo in slot 2 of your quiver. Ammo: [ammo] Can be cast during the global cooldown. Must be manually triggered during revolution combat.',
 		membersOnly: true,
-		iconPath: '/ability-icons/quiver-ammo-slot-2.png'
+		iconPath: '/ability-icons/quiver-ammo-slot-2.png',
+		weapons: null
 	},
 	{
 		name: 'Ranged',
@@ -515,12 +582,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: null,
 		damageVariants: { Any: '100%', 'Dark bow or Gloomfire bow': '100%' },
+		hitCountVariants: null,
 		cooldownText: '1.8 seconds (3 ticks)',
 		equipment: 'Varies (see damageVariants)',
 		description:
 			'Attack the target. 90%-110% Ranged damage. Generates 9% Adrenaline. (If auto attck is enabled): Automatically triggered during combat.',
 		membersOnly: false,
-		iconPath: '/ability-icons/ranged.png'
+		iconPath: '/ability-icons/ranged.png',
+		weapons: null
 	},
 	{
 		name: 'Snap Shot',
@@ -532,12 +601,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '290%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '1.8 seconds (3 ticks)',
 		equipment: 'Any',
 		description:
 			'Fire two shots in quick succession. 135%-155% Ranged damage per hit. 2 hits. Damage is 60% effective in PvP.',
 		membersOnly: false,
-		iconPath: '/ability-icons/snap-shot.png'
+		iconPath: '/ability-icons/snap-shot.png',
+		weapons: null
 	},
 	{
 		name: 'Snipe',
@@ -549,12 +620,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '330%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '60 seconds (100 ticks)',
 		equipment: 'Any',
 		description:
 			'Fire a precise shot. 300-360% Ranged damage after 1.8s (3 ticks). Channelled. Damage is 75% effective in PvP.',
 		membersOnly: false,
-		iconPath: '/ability-icons/snipe.png'
+		iconPath: '/ability-icons/snipe.png',
+		weapons: null
 	},
 	{
 		name: 'Piercing Shot',
@@ -566,12 +639,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '100%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '3 seconds (5 ticks)',
 		equipment: 'Any',
 		description:
 			'Fire two piercing shots. 45%-55% Ranged damage per hit. 2 hits. Reduces the cooldown of Snipe by 2.4s (4 ticks) with each hit. Generates 9% Adrenaline.',
 		membersOnly: false,
-		iconPath: '/ability-icons/piercing-shot.png'
+		iconPath: '/ability-icons/piercing-shot.png',
+		weapons: null
 	},
 	{
 		name: 'Deadshot',
@@ -583,12 +658,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: null,
 		damageVariants: { 'Igneous Kal-Xil or Igneous Kal-Zuk': '520%', Any: '460%' },
+		hitCountVariants: { Any: 4, 'Igneous Kal-Xil or Igneous Kal-Zuk': 8 },
 		cooldownText: '30 seconds (50 ticks)',
 		equipment: 'Varies (see damageVariants)',
 		description:
-			'Fire an enchanted shot at the target, striking them multiple times. 55%-75% Ranged damage per hit. 8 hits. Damage is 60% effective in PvP. Back: Igneous Kal-Xil or Igneous Kal-Zuk',
+			'Fire an enchanted shot at the target, striking them multiple times. 105%-125% Ranged damage per hit, 4 hits (Igneous Kal-Xil or Igneous Kal-Zuk: 55%-75% Ranged damage per hit, 8 hits). Damage is 60% effective in PvP. Back: Igneous Kal-Xil or Igneous Kal-Zuk',
 		membersOnly: true,
-		iconPath: '/ability-icons/deadshot.png'
+		iconPath: '/ability-icons/deadshot.png',
+		weapons: null
 	},
 	{
 		name: 'Binding Shot',
@@ -600,12 +677,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '70%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '15 seconds (25 ticks)',
 		equipment: 'Any',
 		description:
 			'Fire a binding shot. 65%-75% Ranged damage. Stuns the target for 1.2s (2 ticks). Binds the target for 9.6s (16 ticks). (With Scare Tactics enabled) Knocks back the target by 1 tile. Generates 9% Adrenaline. (With at least level 54 Ranged) Maximum charges: 2. (After reading Scare Tactics) Customisation options available. (With Flanking perk) Invention perk: Flanking (rank [number]).',
 		membersOnly: false,
-		iconPath: '/ability-icons/binding-shot.png'
+		iconPath: '/ability-icons/binding-shot.png',
+		weapons: null
 	},
 	{
 		name: 'Bombardment',
@@ -617,12 +696,14 @@ export const abilities: Ability[] = [
 		target: 'Area',
 		damagePercent: '240%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '1.8 seconds (3 ticks)',
 		equipment: 'Any',
 		description:
 			'Fire a volley of shots into the air, which come raining down. 220-260% Ranged damage to the target and up to 9 additional enemies within 2 tiles of the target. Damage is 60% effective in PvP.',
 		membersOnly: false,
-		iconPath: '/ability-icons/bombardment.png'
+		iconPath: '/ability-icons/bombardment.png',
+		weapons: null
 	},
 	{
 		name: 'Galeshot',
@@ -634,12 +715,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '100%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '20.4 seconds (34 ticks)',
 		equipment: 'Any',
 		description:
 			'Fire an infused shot at the target, empowering yourself with searing winds. 90%-110% Ranged damage. Applies Searing Winds to self. 6s (10 ticks) duration. Generates 9% Adrenaline. Searing Winds Ranged attacks deal an additional 20% bonus damage with each hit.',
 		membersOnly: false,
-		iconPath: '/ability-icons/galeshot.png'
+		iconPath: '/ability-icons/galeshot.png',
+		weapons: null
 	},
 	{
 		name: 'Rapid Fire',
@@ -651,12 +734,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '640%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '20.4 seconds (34 ticks)',
 		equipment: 'Any',
 		description:
 			'Rapidly fire at the target. Attack 8 times over 4.8s (8 ticks). 75-85% Ranged damage per hit. Channelled. Binds the target for 6s (10 ticks). Each attack extends the duration of Searing Winds by 0.6s (1 tick). Damage is 80% effective in PvP. Can move while channelling.',
 		membersOnly: false,
-		iconPath: '/ability-icons/rapid-fire.png'
+		iconPath: '/ability-icons/rapid-fire.png',
+		weapons: null
 	},
 	{
 		name: 'Greater Ricochet',
@@ -668,12 +753,14 @@ export const abilities: Ability[] = [
 		target: 'Multi',
 		damagePercent: '135%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '10.2 seconds (17 ticks)',
 		equipment: 'Any',
 		description:
 			'Fire a shot which ricochets off the target. 75-85% Ranged damage to the target and up to 6 enemies within 5 tiles of the target. The target will be hit for an additional 15-20% Ranged damage (4-6% Ranged damage after 2 hits) for each enemy that cannot be found. Generates 9% Adrenaline. (With Caroming perk) Invention perk: Caroming (rank [number]).',
 		membersOnly: true,
-		iconPath: '/ability-icons/greater-ricochet.png'
+		iconPath: '/ability-icons/greater-ricochet.png',
+		weapons: null
 	},
 	{
 		name: 'Ricochet',
@@ -685,12 +772,14 @@ export const abilities: Ability[] = [
 		target: 'Multi',
 		damagePercent: '115%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '10.2 seconds (17 ticks)',
 		equipment: 'Any',
 		description:
 			'Fire a shot which ricochets off the target. 75-85% Ranged damage to the target and up to 2 additional enemies within 5 tiles of the target. The target will be hit for an additional 15%-20% Ranged damage for each enemy that cannot be found. Generates 9% Adrenaline (With Caroming perk) Invention perk: Caroming (rank [number]).',
 		membersOnly: false,
-		iconPath: '/ability-icons/ricochet.png'
+		iconPath: '/ability-icons/ricochet.png',
+		weapons: null
 	},
 	{
 		name: 'Corruption Shot',
@@ -702,12 +791,14 @@ export const abilities: Ability[] = [
 		target: 'Multi',
 		damagePercent: '300%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '15 seconds (25 ticks)',
 		equipment: 'Any',
 		description:
 			'Corrupts the target and nearby enemies, causing them to to take damage over time. 90-110% Ranged damage per hit every 1.2s (2 ticks) to the target and up to 5 additional enemies within 5 tiles of the target. 5 hits. Damage over time. Damage is reduced by 20% of initial damage with each hit.',
 		membersOnly: true,
-		iconPath: '/ability-icons/corruption-shot.png'
+		iconPath: '/ability-icons/corruption-shot.png',
+		weapons: null
 	},
 	{
 		name: 'Shadow Tendrils',
@@ -719,12 +810,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '330% (guaranteed to crit)',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '45 seconds (75 ticks)',
 		equipment: 'Any',
 		description:
 			'Shadow tendrils whip at your feet, before striking the target. 200%-240% Ranged damage. 100%-135% damage to self. Extends the duration of Shadow imbued by 3.6s (6 ticks). Guaranteed to critically strike.',
 		membersOnly: true,
-		iconPath: '/ability-icons/shadow-tendrils.png'
+		iconPath: '/ability-icons/shadow-tendrils.png',
+		weapons: null
 	},
 	{
 		name: "Death's Swiftness",
@@ -736,12 +829,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '60 seconds (100 ticks)',
 		equipment: 'Any',
 		description:
 			'Create a shroud of death. Ranged attacks deal 1.5x damage. 30s (50 ticks) duration.',
 		membersOnly: true,
-		iconPath: '/ability-icons/death-s-swiftness.png'
+		iconPath: '/ability-icons/death-s-swiftness.png',
+		weapons: null
 	},
 	{
 		name: "Greater Death's Swiftness",
@@ -753,12 +848,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '60 seconds (100 ticks)',
 		equipment: 'Any',
 		description:
 			'Create a shroud of death. Ranged attacks deal 1.5x damage. 37.8s (63 ticks) duration.',
 		membersOnly: true,
-		iconPath: '/ability-icons/greater-death-s-swiftness.png'
+		iconPath: '/ability-icons/greater-death-s-swiftness.png',
+		weapons: null
 	},
 	{
 		name: 'Imbue: Shadows',
@@ -770,12 +867,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '60 seconds (100 ticks)',
 		equipment: 'Any',
 		description:
 			'Imbue your weapon with dark whispers. Applies Shadow Imbued to self. 30s (50 ticks) duration. Shadow Imbued Ranged attacks against your target generate 5% Adrenaline with each hit.',
 		membersOnly: false,
-		iconPath: '/ability-icons/imbue-shadows.png'
+		iconPath: '/ability-icons/imbue-shadows.png',
+		weapons: null
 	},
 	{
 		name: 'Surge',
@@ -787,12 +886,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '20.4 seconds (34 ticks)',
 		equipment: 'None',
 		description:
 			'Teleport forward. Move forwards 10 tiles. (After reading a Double Surge codex) Maximum charges: 2. Can be cast during the global cooldown. Must be manually triggered during revolution combat.',
 		membersOnly: false,
-		iconPath: '/ability-icons/surge.png'
+		iconPath: '/ability-icons/surge.png',
+		weapons: null
 	},
 	{
 		name: 'Magic',
@@ -804,12 +905,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '100%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '1.8 seconds (3 ticks)',
 		equipment: 'Any',
 		description:
 			'Attack the target. 90%-110% Magic damage. Generates 9% Adrenaline. Automatically triggered during combat.',
 		membersOnly: false,
-		iconPath: '/ability-icons/magic.png'
+		iconPath: '/ability-icons/magic.png',
+		weapons: null
 	},
 	{
 		name: 'Wild Magic',
@@ -821,12 +924,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '319.2% (including crit modifiers)',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '5.4 seconds (9 ticks)',
 		equipment: 'Any',
 		description:
 			'Fire an unpredictable double magical attack at the target. 125-155% Magic damage per hit. 2 hits. Each hit has +10% Critical Strike Chance and +20% Critical Strike Damage.',
 		membersOnly: false,
-		iconPath: '/ability-icons/wild-magic.png'
+		iconPath: '/ability-icons/wild-magic.png',
+		weapons: null
 	},
 	{
 		name: 'Greater Sonic Wave',
@@ -838,12 +943,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '125%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '15 seconds (25 ticks)',
 		equipment: 'Any',
 		description:
 			'A focused blast of magic that pummels the target and leaves behind residual energy. 115-135% Magic damage. Applies Greater Flow to self. 9s (15 ticks) duration. Generates 9% Adrenaline. Greater Flow Your next Magic ability costs 20% less Adrenaline.',
 		membersOnly: true,
-		iconPath: '/ability-icons/greater-sonic-wave.png'
+		iconPath: '/ability-icons/greater-sonic-wave.png',
+		weapons: null
 	},
 	{
 		name: 'Sonic Wave',
@@ -855,12 +962,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '100%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '15 seconds (25 ticks)',
 		equipment: 'Any',
 		description:
 			'A focused blast of magic that pummels the target. 90%-110% Magic damage. Applies Flow to self. 9s (15 ticks) duration. Generates 9% Adrenaline. Flow Your next Magic ability costs 10% less Adrenaline',
 		membersOnly: false,
-		iconPath: '/ability-icons/sonic-wave.png'
+		iconPath: '/ability-icons/sonic-wave.png',
+		weapons: null
 	},
 	{
 		name: 'Omnipower',
@@ -872,12 +981,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: null,
 		damageVariants: { Any: '460%', 'Igneous Kal-Mej or Igneous Kal-Zuk': '540%' },
+		hitCountVariants: { Any: 1, 'Igneous Kal-Mej or Igneous Kal-Zuk': 4 },
 		cooldownText: '30 seconds (50 ticks)',
 		equipment: 'Varies (see damageVariants)',
 		description:
-			'Bombard the target with each of the four elements. 420-500% Magic damage. Damage is 60% effective in PvP.',
+			'Bombard the target with each of the four elements. 420-500% Magic damage (Igneous Kal-Mej or Igneous Kal-Zuk: 120-150% Magic damage per hit, 4 hits). Damage is 60% effective in PvP.',
 		membersOnly: false,
-		iconPath: '/ability-icons/omnipower.png'
+		iconPath: '/ability-icons/omnipower.png',
+		weapons: null
 	},
 	{
 		name: 'Dragon Breath',
@@ -889,12 +1000,14 @@ export const abilities: Ability[] = [
 		target: 'Area',
 		damagePercent: '120%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '7.2 seconds (12 ticks)',
 		equipment: 'Any',
 		description:
 			'Breathe a mighty cloud of fire. 110-130% Magic damage to the target and up to 4 in a cone in the attack direction. Deals 1.25x damage to Combusted enemies. Generates 9% Adrenaline.',
 		membersOnly: false,
-		iconPath: '/ability-icons/dragon-breath.png'
+		iconPath: '/ability-icons/dragon-breath.png',
+		weapons: null
 	},
 	{
 		name: 'Runic Charge',
@@ -906,12 +1019,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '30 seconds (50 ticks)',
 		equipment: 'Any',
 		description:
 			'Charge yourself with Anima Applies Anima Charged to self. 15s (25 ticks) duration. Can be cast during the global cooldown. Must be manually triggered during revolution combat. Anima Charged: Your next Magic ability is empowered: Sonic Wave: Your next Magic ability costs 35% less Adrenaline. Greater Sonic Wave: Your next Magic ability costs 45% less Adrenaline. Dragon Breath: Deals 260%-310% Magic damage Concentrated Blast: Each attack grants an additional 10% Critical Strike Chance. Greater Concentrated Blast: Each attack grants an additional 10% Critical Strike Chance.',
 		membersOnly: false,
-		iconPath: '/ability-icons/runic-charge.png'
+		iconPath: '/ability-icons/runic-charge.png',
+		weapons: null
 	},
 	{
 		name: 'Impact',
@@ -923,12 +1038,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '70%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '15 seconds (25 ticks)',
 		equipment: 'Any',
 		description:
 			'Smash the target with a burst of earth energy. 65%-75% Magic damage. Stuns and Binds the target for 1.8s (3 ticks). (With Scare Tactics enabled) Knocks back the target by 1 tile. Generates 9% Adrenaline. (With at least level 54 Magic) Maximum charges: 2. (After reading Scare Tactics) Customisation options available. (With Flanking perk) Invention perk: Flanking (rank [number]).',
 		membersOnly: false,
-		iconPath: '/ability-icons/impact.png'
+		iconPath: '/ability-icons/impact.png',
+		weapons: null
 	},
 	{
 		name: 'Combust',
@@ -940,12 +1057,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '300%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '18 seconds (30 ticks)',
 		equipment: 'Any',
 		description:
 			'Explode the target, causing them to burn. 27%-33% Magic damage per hit every 1.8s (3 ticks). 10 hits. Damage over time. Generates 9% Adrenaline.',
 		membersOnly: false,
-		iconPath: '/ability-icons/combust.png'
+		iconPath: '/ability-icons/combust.png',
+		weapons: null
 	},
 	{
 		name: 'Chain',
@@ -957,12 +1076,14 @@ export const abilities: Ability[] = [
 		target: 'Multi',
 		damagePercent: '80%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '10.2 seconds (17 ticks)',
 		equipment: 'Any',
 		description:
 			'A magical spell that chains between nearby targets. 70-90% Magic damage to the target and up to 2 additional targets within 5 tiles of the target. Your next Single-target Magic ability against the target within 6s (10 ticks) will also target the additional enemies, dealing 30% damage. Generates 9% Adrenaline.',
 		membersOnly: false,
-		iconPath: '/ability-icons/chain.png'
+		iconPath: '/ability-icons/chain.png',
+		weapons: null
 	},
 	{
 		name: 'Greater Chain',
@@ -974,12 +1095,14 @@ export const abilities: Ability[] = [
 		target: 'Multi',
 		damagePercent: '90%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '10.2 seconds (17 ticks)',
 		equipment: 'Any',
 		description:
 			'A magical spell that chains between nearby targets. 80-100% Magic damage to the target and up to 6 additional enemies within 5 tiles of the target. Your next Single-target Magic ability against the target within 6s (10 ticks) will also target the additional enemies, dealing 50% damage. Generates 9% Adrenaline. (With Caroming perk) Invention perk: Caroming (rank [number]).',
 		membersOnly: true,
-		iconPath: '/ability-icons/greater-chain.png'
+		iconPath: '/ability-icons/greater-chain.png',
+		weapons: null
 	},
 	{
 		name: 'Golden Touch',
@@ -991,12 +1114,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '120 seconds (200 ticks)',
 		equipment: 'None',
 		description:
 			'Feel the magic of gold at your fingertips. High-alchemises all drops not exceeding the lootbeam value. 60s (100 ticks) duration. Can be cast during the global cooldown. Must be manually triggered during revolution combat.',
 		membersOnly: true,
-		iconPath: '/ability-icons/golden-touch.png'
+		iconPath: '/ability-icons/golden-touch.png',
+		weapons: null
 	},
 	{
 		name: 'Asphyxiate',
@@ -1008,12 +1133,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: null,
 		damageVariants: { Any: '520%', "4+ pieces of Tumeken's resplendence equipment": '624%' },
+		hitCountVariants: null,
 		cooldownText: '20.4 seconds (34 ticks)',
 		equipment: 'Varies (see damageVariants)',
 		description:
 			'Reach out with magical force and choke the target. Attack 4 times over 4.2s (7 ticks). 120%-140% Magic damage per hit. Channelled. Stuns and Binds the target for 3.6s (6 ticks). Completing the channel applies Channelled Might to self for 3.6s (6 ticks). Channelled Might Your Magic attacks gain +15% Critical Strike Damage.',
 		membersOnly: false,
-		iconPath: '/ability-icons/asphyxiate.png'
+		iconPath: '/ability-icons/asphyxiate.png',
+		weapons: null
 	},
 	{
 		name: 'Concentrated Blast',
@@ -1025,12 +1152,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '112.875% (including self crit modifier)',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '5.4 seconds (9 ticks)',
 		equipment: 'Any',
 		description:
 			'Blast the target with beams of concentrated energy. Attack 3 times over 1.8s (3 ticks). 30-40% Magic damage per hit. Channelled. Each attack increases the Critical Strike Chance of your next magic attack by 5%, stacking to a maximum of 15%. Generates 9% Adrenaline.',
 		membersOnly: false,
-		iconPath: '/ability-icons/concentrated-blast.png'
+		iconPath: '/ability-icons/concentrated-blast.png',
+		weapons: null
 	},
 	{
 		name: 'Greater Concentrated Blast',
@@ -1042,12 +1171,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '146.475% (including self crit modifier)',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '5.4 seconds (9 ticks)',
 		equipment: 'Any',
 		description:
 			'Blast the target with beams of concentrated energy. Attack 3 times over 1.8s (3 ticks). 40-50% Magic damage per hit. Channelled. Each attack increases the Critical Strike Chance of your next Magic attack by 7%, stacking to a maximum of 21%. Generates 9% Adrenaline.',
 		membersOnly: true,
-		iconPath: '/ability-icons/greater-concentrated-blast.png'
+		iconPath: '/ability-icons/greater-concentrated-blast.png',
+		weapons: null
 	},
 	{
 		name: 'Corruption Blast',
@@ -1059,12 +1190,14 @@ export const abilities: Ability[] = [
 		target: 'Multi',
 		damagePercent: '300%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '15 seconds (25 ticks)',
 		equipment: 'Any',
 		description:
 			'Blasts the target with corruption, causing them to take damage over time. 90-110% Magic damage per hit every 1.2s (2 ticks). 5 hits. Damage over time. Damage is reduced by 20% of initial damage with each hit and will spread to enemies within 2 tiles.',
 		membersOnly: true,
-		iconPath: '/ability-icons/corruption-blast.png'
+		iconPath: '/ability-icons/corruption-blast.png',
+		weapons: null
 	},
 	{
 		name: 'Smoke Tendrils',
@@ -1076,12 +1209,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '472.5% (guaranteed to crit)',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '45 seconds (75 ticks)',
 		equipment: 'Any',
 		description:
 			"Tendrils of smoke whip at the target's feet. 55-65% Magic damage per hit every 1.2s (2 ticks). Deals an additional (10%-15% ) damage with each hit. 35-40% damage to self per hit. 4 hits. Channelled. Guaranteed to critically strike.",
 		membersOnly: true,
-		iconPath: '/ability-icons/smoke-tendrils.png'
+		iconPath: '/ability-icons/smoke-tendrils.png',
+		weapons: null
 	},
 	{
 		name: 'Greater Sunshine',
@@ -1093,12 +1228,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '315%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '60 seconds (100 ticks)',
 		equipment: 'Any',
 		description:
 			'Summon a sunbeam to shine over your location. Creates a 7x7 area at your location. Magic attacks deal 1.5x damage while inside the area. 10-20 Magic damage per hit every 1.8s (3 ticks) to the target while it is inside the area. 37.8s (63 ticks) duration.',
 		membersOnly: true,
-		iconPath: '/ability-icons/greater-sunshine.png'
+		iconPath: '/ability-icons/greater-sunshine.png',
+		weapons: null
 	},
 	{
 		name: 'Sunshine',
@@ -1110,12 +1247,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '240%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '60 seconds (100 ticks)',
 		equipment: 'Any',
 		description:
 			'Summon a sunbeam to shine over your location. Creates a 7x7 area at your location. Magic attacks deal 1.5x damage while inside the area. 10%-20% Magic damage per hit every 1.8s (3 ticks) to the target while it is inside the area. 30s (50 ticks) duration.',
 		membersOnly: true,
-		iconPath: '/ability-icons/sunshine.png'
+		iconPath: '/ability-icons/sunshine.png',
+		weapons: null
 	},
 	{
 		name: 'Magma Tempest',
@@ -1127,12 +1266,14 @@ export const abilities: Ability[] = [
 		target: 'Area',
 		damagePercent: '320%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '21 seconds (35 ticks)',
 		equipment: 'Any',
 		description:
 			'Create a storm of fire and earth around the target. Creates a 5x5 area at the target location. 35-45% Magic damage per hit every 1.2s (2 ticks) to up to 25 enemies inside the area. 8 hits. Cannot critically strike.',
 		membersOnly: true,
-		iconPath: '/ability-icons/magma-tempest.png'
+		iconPath: '/ability-icons/magma-tempest.png',
+		weapons: null
 	},
 	{
 		name: 'Magma Tempest (Targeted)',
@@ -1144,12 +1285,14 @@ export const abilities: Ability[] = [
 		target: 'Area',
 		damagePercent: '320%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '21 seconds (35 ticks)',
 		equipment: 'Any',
 		description:
 			'Create a storm of fire and earth at targeted location. Creates a 5x5 area at the target location. 35-45% Magic damage per hit every 1.2s (2 ticks) to up to 25 enemies inside the area. 8 hits. Cannot critically strike. Must be manually triggered during revolution combat.',
 		membersOnly: true,
-		iconPath: '/ability-icons/magma-tempest-targeted.png'
+		iconPath: '/ability-icons/magma-tempest-targeted.png',
+		weapons: null
 	},
 	{
 		name: 'Tsunami',
@@ -1161,12 +1304,14 @@ export const abilities: Ability[] = [
 		target: 'Area',
 		damagePercent: '250%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '60 seconds (100 ticks)',
 		equipment: 'Any',
 		description:
 			'Summon forth a destructive wall of water. 225-275% Magic damage to the target and up to 8 additional enemies within 4 tiles in the attack direction. Critical Strikes generate an additional 8% Adrenaline for 30s (50 ticks).',
 		membersOnly: false,
-		iconPath: '/ability-icons/tsunami.png'
+		iconPath: '/ability-icons/tsunami.png',
+		weapons: null
 	},
 	{
 		name: 'Necromancy',
@@ -1178,12 +1323,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '100%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '1.8 seconds (3 ticks)',
 		equipment: 'Any',
 		description:
 			"Attack the target. 90%-110% Necromancy damage. Generates 9% Adrenaline. Automatically triggered during combat. (With an Omni guard equipped) Main-hand: (Augmented) Omni guard Basic Attack: Generates 1 Death Spark stack. At 5 stacks, your Basic Attack is empowered and deals 2x damage. (With a Devourer's Guard equipped) Main-hand: (Augmented) Devourer's Guard Basic Attack: Generates 1 Soul Reave stack. At 4 stacks, your Basic Attack is empowered and generates 1 Residual Soul.",
 		membersOnly: false,
-		iconPath: '/ability-icons/necromancy.png'
+		iconPath: '/ability-icons/necromancy.png',
+		weapons: null
 	},
 	{
 		name: 'Conjure Skeleton Warrior',
@@ -1195,12 +1342,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: '642.5%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Conduit, 1 ectoplasm',
 		description:
 			'Conjure a Skeleton Warrior from the Underworld. 22%-28% Necromancy Spirit damage every 3s (5 ticks). [number]s duration. Spirit. Skeleton Warrior Filled with uncontrollable anger. Generates 1 Rage stack with each attack. Damage is increased by 3% for each Rage stack.',
 		membersOnly: false,
-		iconPath: '/ability-icons/conjure-skeleton-warrior.png'
+		iconPath: '/ability-icons/conjure-skeleton-warrior.png',
+		weapons: null
 	},
 	{
 		name: 'Finger of Death',
@@ -1212,12 +1361,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '300%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Any',
 		description:
 			'Inflict searing pain on the target. 270%-330% Necromancy damage. Adrenaline cost is reduced by 10% for each Necrosis stack. Consumes up to 6 Necrosis stacks.',
 		membersOnly: false,
-		iconPath: '/ability-icons/finger-of-death.png'
+		iconPath: '/ability-icons/finger-of-death.png',
+		weapons: null
 	},
 	{
 		name: 'Touch of Death',
@@ -1229,12 +1380,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '100%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '14.4 seconds (24 ticks)',
 		equipment: 'Any',
 		description:
 			'Touch the target with a hand of Death. 90%-110% Necromancy damage. Generates 4 Necrosis stacks. Generates 9% Adrenaline.',
 		membersOnly: false,
-		iconPath: '/ability-icons/touch-of-death.png'
+		iconPath: '/ability-icons/touch-of-death.png',
+		weapons: null
 	},
 	{
 		name: 'Command Skeleton Warrior',
@@ -1246,12 +1399,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '350%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '15 seconds (25 ticks)',
 		equipment: 'Conduit',
 		description:
 			'Command the Skeleton Warrior to unleash its inner rage. 22%-28% Necromancy Spirit damage per hit every 1.2s (2 ticks). 2 hits. 6s (10 ticks) duration.',
 		membersOnly: false,
-		iconPath: '/ability-icons/command-skeleton-warrior.png'
+		iconPath: '/ability-icons/command-skeleton-warrior.png',
+		weapons: null
 	},
 	{
 		name: 'Death Skulls',
@@ -1263,12 +1418,14 @@ export const abilities: Ability[] = [
 		target: 'Multi',
 		damagePercent: null,
 		damageVariants: { 'Igneous Kal-Mor or igneous Kal-Zuk': '250%-1000%', Any: '250%-750%' },
+		hitCountVariants: { Any: 4, 'Igneous Kal-Mor or igneous Kal-Zuk': 6 },
 		cooldownText: '60 seconds (100 ticks)',
 		equipment: 'Varies (see damageVariants)',
 		description:
-			'Launch a flurry of skulls at the target. 225%-275% Necromancy damage per hit. Bounces between enemies within 6 tiles of each other up to 6 times (disabled in PvP) Prioritises enemies with higher maximum life points. If there are no enemies nearby it will bounce to the caster dealing no damage.',
+			'Launch a flurry of skulls at the target. 225%-275% Necromancy damage per hit. Bounces between enemies within 6 tiles of each other up to 4 times (Igneous Kal-Mor or Igneous Kal-Zuk: up to 6 times) (disabled in PvP) Prioritises enemies with higher maximum life points. If there are no enemies nearby it will bounce to the caster dealing no damage.',
 		membersOnly: true,
-		iconPath: '/ability-icons/death-skulls.png'
+		iconPath: '/ability-icons/death-skulls.png',
+		weapons: null
 	},
 	{
 		name: 'Blood Siphon',
@@ -1280,12 +1437,14 @@ export const abilities: Ability[] = [
 		target: 'Area',
 		damagePercent: '300%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '45 seconds (75 ticks)',
 		equipment: 'Any',
 		description:
 			'Siphon blood from enemies before releasing a powerful attack on your target. Attack 5 times over 5.4s (9 ticks). 22%-28% Necromancy damage per hit to up to 25 enemies within 2 tiles of you. Channelled. Heals you for 70% of the damage dealt. The final attack instead deals 117%-143% Necromancy damage to the target plus 100% of the total heal value.',
 		membersOnly: true,
-		iconPath: '/ability-icons/blood-siphon.png'
+		iconPath: '/ability-icons/blood-siphon.png',
+		weapons: null
 	},
 	{
 		name: 'Conjure Putrid Zombie',
@@ -1297,12 +1456,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: '650%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '30 seconds (50 ticks)',
 		equipment: 'Conduit, 1 ectoplasm',
 		description:
 			'Conjure a Putrid Zombie from the Underworld. 18%-22% Necromancy Spirit damage every 3.6s (6 ticks). [number]s duration. Spirit. Putrid Zombie Emits a fetid stench. 8%-12% Poison damage every 1.8s (3 ticks) to enemies within 1 tile.',
 		membersOnly: true,
-		iconPath: '/ability-icons/conjure-putrid-zombie.png'
+		iconPath: '/ability-icons/conjure-putrid-zombie.png',
+		weapons: null
 	},
 	{
 		name: 'Conjure Vengeful Ghost',
@@ -1314,12 +1475,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: '280%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Conduit, 1 ectoplasm',
 		description:
 			'Conjure a Vengeful Ghost from the Underworld. 18%-22% Necromancy Spirit damage every 4.2s (7 ticks). [number]s duration. Spirit. Vengeful Ghost Drains the vigour of enemies. Heals you for 140% of the damage dealt.',
 		membersOnly: true,
-		iconPath: '/ability-icons/conjure-vengeful-ghost.png'
+		iconPath: '/ability-icons/conjure-vengeful-ghost.png',
+		weapons: null
 	},
 	{
 		name: 'Bloat',
@@ -1331,12 +1494,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '525%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Any',
 		description:
 			'Bloat the target, causing them to take damage over time. 135%-165% Necromancy damage. Applies Bloated to the target for 10 hits. Bloated Swollen from the inside. 25% of initial damage per hit every 1.8s (3 ticks). Damage over time. On-death: Applies Bloated to up to 9 enemies within 1 tile for 4 hits.',
 		membersOnly: true,
-		iconPath: '/ability-icons/bloat.png'
+		iconPath: '/ability-icons/bloat.png',
+		weapons: null
 	},
 	{
 		name: 'Soul Sap',
@@ -1348,12 +1513,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '100%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '5.4 seconds (9 ticks)',
 		equipment: 'Conduit',
 		description:
 			"Sap the target's soul. 90%-110% Necromancy damage. Generates 1 Residual Soul stack with each hit. Generates 9% Adrenaline.",
 		membersOnly: true,
-		iconPath: '/ability-icons/soul-sap.png'
+		iconPath: '/ability-icons/soul-sap.png',
+		weapons: null
 	},
 	{
 		name: 'Soul Strike',
@@ -1365,12 +1532,14 @@ export const abilities: Ability[] = [
 		target: 'Area',
 		damagePercent: '150%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Any',
 		description:
 			'Strike the target with a residual soul. 135%-165% Necromancy damage. Stuns and Binds the target for 3s (5 ticks). 90%-110% Necromancy damage to up to 9 enemies within 1 tile of the target. (With Flanking perk) Invention perk: Flanking (rank [number]).',
 		membersOnly: true,
-		iconPath: '/ability-icons/soul-strike.png'
+		iconPath: '/ability-icons/soul-strike.png',
+		weapons: null
 	},
 	{
 		name: 'Command Putrid Zombie',
@@ -1382,12 +1551,14 @@ export const abilities: Ability[] = [
 		target: 'Area',
 		damagePercent: '400%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Conduit',
 		description:
 			'Command the Putrid Zombie to explode. 360%-440% Necromancy Spirit damage to enemies within 2 tiles.',
 		membersOnly: true,
-		iconPath: '/ability-icons/command-putrid-zombie.png'
+		iconPath: '/ability-icons/command-putrid-zombie.png',
+		weapons: null
 	},
 	{
 		name: 'Command Vengeful Ghost',
@@ -1399,12 +1570,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Conduit',
 		description:
 			'Command the Vengeful Ghost to haunt your enemies. Applies Haunted to the target with each attack for 4.8s (8 ticks). Haunted Takes up to 10% bonus damage from all attacks, capped at [number] (20%) Necromancy damage.',
 		membersOnly: true,
-		iconPath: '/ability-icons/command-vengeful-ghost.png'
+		iconPath: '/ability-icons/command-vengeful-ghost.png',
+		weapons: null
 	},
 	{
 		name: 'Spectral Scythe (1st cast)',
@@ -1416,12 +1589,14 @@ export const abilities: Ability[] = [
 		target: 'Area',
 		damagePercent: '80%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '15 seconds (25 ticks)',
 		equipment: 'Any',
 		description:
 			'Swipe a spectral scythe in front of you. 72%-88% Necromancy damage to the target and up to 9 additional enemies in a cone in the attack direction. 25% chance to generate 1 Residual Soul stack. Can be recast within 15s (25 ticks) of the previous cast. Second Cast: Spin around wildly with a spectral scythe. Third Cast: Strike from above, shattering spectral energy around you.',
 		membersOnly: true,
-		iconPath: '/ability-icons/spectral-scythe-1st-cast.png'
+		iconPath: '/ability-icons/spectral-scythe-1st-cast.png',
+		weapons: null
 	},
 	{
 		name: 'Spectral Scythe (2nd cast)',
@@ -1433,12 +1608,14 @@ export const abilities: Ability[] = [
 		target: 'Area',
 		damagePercent: '200%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Any',
 		description:
 			'Spin around wildy with a spectral scythe. 180%-220% Necromancy damage to the target and up to 25 additional enemies within 2 tiles of you. On-hit: 25% chance to generate 1 Residual Soul stack.',
 		membersOnly: true,
-		iconPath: '/ability-icons/spectral-scythe-2nd-cast.png'
+		iconPath: '/ability-icons/spectral-scythe-2nd-cast.png',
+		weapons: null
 	},
 	{
 		name: 'Spectral Scythe (3rd cast)',
@@ -1450,12 +1627,14 @@ export const abilities: Ability[] = [
 		target: 'Area',
 		damagePercent: '250%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Any',
 		description:
 			"Strike from above, shattering spectral energy around you. 225%-275% Necromancy damage to the target and up to 25 additional enemies within 2 tiles of you. Damage is increased by 0%-100% based on enemy's missing life points.",
 		membersOnly: true,
-		iconPath: '/ability-icons/spectral-scythe-3rd-cast.png'
+		iconPath: '/ability-icons/spectral-scythe-3rd-cast.png',
+		weapons: null
 	},
 	{
 		name: 'Volley of Souls',
@@ -1467,12 +1646,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '300-750%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Any',
 		description:
 			'Send a volley of residual souls towards the target. 135%-165% Necromancy damage for each Residual Soul stack.',
 		membersOnly: true,
-		iconPath: '/ability-icons/volley-of-souls.png'
+		iconPath: '/ability-icons/volley-of-souls.png',
+		weapons: null
 	},
 	{
 		name: 'Conjure Phantom Guardian',
@@ -1484,12 +1665,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: '0%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Conduit, 1 ectoplasm',
 		description:
 			"Conjure a Phantom Guardian from the Underworld. 1m duration. Spirit. Phantom Guardian Protects against harm. Reduces damage taken from core damage types by up to 5%, capped at 10% of the player's ability damage. Generates 1 Valour stack with each incoming hit.",
 		membersOnly: true,
-		iconPath: '/ability-icons/conjure-phantom-guardian.png'
+		iconPath: '/ability-icons/conjure-phantom-guardian.png',
+		weapons: null
 	},
 	{
 		name: 'Living Death',
@@ -1501,12 +1684,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '90 seconds (150 ticks)',
 		equipment: 'Any',
 		description:
 			'Master your instincts and transcend into a Death form. Basic Attack: Generates 2 Necrosis stacks. Touch of Death: Generates an additional 6% Adrenaline. Finger of Death: Deals 1.5x damage. Death Skulls: Cooldown reduced to 10.2s (17 ticks). 30s (50 ticks) duration. On-cast: Resets the cooldown of Touch of Death and Death Skulls.',
 		membersOnly: true,
-		iconPath: '/ability-icons/living-death.png'
+		iconPath: '/ability-icons/living-death.png',
+		weapons: null
 	},
 	{
 		name: 'Command Phantom Guardian',
@@ -1518,12 +1703,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '50% (300% with 25 Valour stacks)',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '9 seconds (15 ticks)',
 		equipment: 'Conduit',
 		description:
 			'Command the Phantom Guardian to blast the target with its shield. 45%-55% Necromancy Spirit damage to the target and up to 4 additional enemies within 1 tile of the target. Damage is increased by 20% for each Valour stack. Consumes all Valour stacks.',
 		membersOnly: true,
-		iconPath: '/ability-icons/command-phantom-guardian.png'
+		iconPath: '/ability-icons/command-phantom-guardian.png',
+		weapons: null
 	},
 	{
 		name: 'Conjure Undead Army',
@@ -1535,12 +1722,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'up to 1572.5%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Conduit, 2–8 ectoplasm',
 		description:
 			'Conjure an Undead Army from the Underworld. Casts up to [number] conjure abilities. Consumes 2x Ectoplasm for each ability.',
 		membersOnly: true,
-		iconPath: '/ability-icons/conjure-undead-army.png'
+		iconPath: '/ability-icons/conjure-undead-army.png',
+		weapons: null
 	},
 	{
 		name: 'Aggression',
@@ -1552,12 +1741,14 @@ export const abilities: Ability[] = [
 		target: 'Area',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '90 seconds (150 ticks)',
 		equipment: 'None',
 		description:
 			'Burst out in anger. Force up to 8 enemies within 5 tiles to attack you. Revolution will not trigger this ability. Has no effect in PvP. Generates no adrenaline.',
 		membersOnly: true,
-		iconPath: '/ability-icons/aggression.png'
+		iconPath: '/ability-icons/aggression.png',
+		weapons: null
 	},
 	{
 		name: 'Cease',
@@ -1569,12 +1760,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'None',
 		description:
 			'Stops all current and pending attacks. Stops any in use channelled ability. Cancels any queued abilities, including those queued by revolution. Disables auto-retaliate for 6s (10 ticks). Prevents familiars from attacking for 6s (10 ticks). Attacking an enemy will cancel the effect. Revolution mode will not trigger this ability. Generates no adrenaline.',
 		membersOnly: false,
-		iconPath: '/ability-icons/cease.png'
+		iconPath: '/ability-icons/cease.png',
+		weapons: null
 	},
 	{
 		name: 'Unsullied',
@@ -1586,12 +1779,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '60 seconds (100 ticks)',
 		equipment: 'None',
 		description:
 			'Clean yourself of corruption. Stop Sophanem corruption effect increasing your damage taken without losing the damage boost. 30s (50 ticks) duration. Revolution will not trigger this ability. Generates no adrenaline.',
 		membersOnly: true,
-		iconPath: '/ability-icons/unsullied.png'
+		iconPath: '/ability-icons/unsullied.png',
+		weapons: null
 	},
 	{
 		name: 'Devotion',
@@ -1603,12 +1798,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '60 seconds (100 ticks)',
 		equipment: 'None',
 		description:
 			'Empower yourself with the protection of the gods. Increase the effectiveness of your protection prayers to 100%(75% in PvP). 9.6s (16 ticks) duration. Killing an enemy extends the duration by 4.8s (8 ticks) up to a maximum of 19.2s (32 ticks).',
 		membersOnly: false,
-		iconPath: '/ability-icons/devotion.png'
+		iconPath: '/ability-icons/devotion.png',
+		weapons: null
 	},
 	{
 		name: 'Anticipation',
@@ -1620,12 +1817,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '24.6 seconds (41 ticks)',
 		equipment: 'None',
 		description:
 			'Focus your mind to anticipate incoming attacks. Reduce all damage taken by 10%. Immune to stuns. 10.2s (17 ticks) duration.',
 		membersOnly: false,
-		iconPath: '/ability-icons/anticipation.png'
+		iconPath: '/ability-icons/anticipation.png',
+		weapons: null
 	},
 	{
 		name: 'Bash',
@@ -1637,12 +1836,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: 'Varies',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '15 seconds (25 ticks)',
 		equipment: 'Shield',
 		description:
 			"Slam your shield into the target. 20%-100% ability damage. Deal additional damage equal to 10% of your shield's armour value plus your defence level. Offensive.",
 		membersOnly: false,
-		iconPath: '/ability-icons/bash.png'
+		iconPath: '/ability-icons/bash.png',
+		weapons: null
 	},
 	{
 		name: 'Revenge',
@@ -1654,12 +1855,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '45 seconds (75 ticks)',
 		equipment: 'Shield',
 		description:
 			'The best defence is offence. Each attack dealt to you increases your damage dealt by 5%. Stacks up to 10 times. 50% effective when using a defender. 19.8s (33 ticks) duration. Offensive.',
 		membersOnly: false,
-		iconPath: '/ability-icons/revenge.png'
+		iconPath: '/ability-icons/revenge.png',
+		weapons: null
 	},
 	{
 		name: 'Provoke',
@@ -1671,12 +1874,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '10.2 seconds (17 ticks)',
 		equipment: 'None',
 		description:
 			"Taunt the target. Force the target to attack you. In PvP, reduce both targeted player's and your damage towards other players by 50% for 6s (10 ticks).",
 		membersOnly: false,
-		iconPath: '/ability-icons/provoke.png'
+		iconPath: '/ability-icons/provoke.png',
+		weapons: null
 	},
 	{
 		name: 'Immortality',
@@ -1688,12 +1893,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '120 seconds (200 ticks)',
 		equipment: 'Shield',
 		description:
 			'Show tenacity even in the face of death. Reduce all damage taken by 25%. 30s (50 ticks) duration. If you die during this period, immediately return to life with 40% of your maximum lifepoints. The damage reduction effect is removed upon returning to life.',
 		membersOnly: false,
-		iconPath: '/ability-icons/immortality.png'
+		iconPath: '/ability-icons/immortality.png',
+		weapons: null
 	},
 	{
 		name: 'Freedom',
@@ -1705,12 +1912,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '30 seconds (50 ticks)',
 		equipment: 'None',
 		description:
 			'Break free from all that stops you. Remove stuns and binds. Clear damage over time effects. Gain immunity to stuns and binds. 6s (10 ticks) duration.',
 		membersOnly: false,
-		iconPath: '/ability-icons/freedom.png'
+		iconPath: '/ability-icons/freedom.png',
+		weapons: null
 	},
 	{
 		name: 'Reflect',
@@ -1722,12 +1931,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '30 seconds (50 ticks)',
 		equipment: 'Shield',
 		description:
 			'Use your shield to return attacks back at the attacker. Reduce damage taken by 50% (25% in PvP). Reflect the reduced damage back at the attacker. 9.6s (16 ticks) duration.',
 		membersOnly: false,
-		iconPath: '/ability-icons/reflect.png'
+		iconPath: '/ability-icons/reflect.png',
+		weapons: null
 	},
 	{
 		name: 'Divert',
@@ -1739,12 +1950,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '30 seconds (50 ticks)',
 		equipment: 'Shield',
 		description:
 			'Channel power into your shield to block an attack. Block the next attack. 6s (10 ticks) duration. Generate 0.8% adrenaline for every 100-200 damage blocked, based on the level of shield equipped with diminishing returns at 3,000, 6,000 and 9,000 damage blocked. Powerful attacks will have their damage blocked, but will not generate adrenaline.',
 		membersOnly: true,
-		iconPath: '/ability-icons/divert.png'
+		iconPath: '/ability-icons/divert.png',
+		weapons: null
 	},
 	{
 		name: 'Resonance',
@@ -1756,12 +1969,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '30 seconds (50 ticks)',
 		equipment: 'Shield',
 		description:
 			'Channel power into your shield to block an attack. Block the next attack. 6s (10 ticks) duration. Heal for 50%-100% damage blocked, based on the level of shield equipped. Powerful attacks will have their damage blocked, but will not heal you.',
 		membersOnly: false,
-		iconPath: '/ability-icons/resonance.png'
+		iconPath: '/ability-icons/resonance.png',
+		weapons: null
 	},
 	{
 		name: 'Rejuvenate',
@@ -1773,12 +1988,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '300 seconds (500 ticks)',
 		equipment: 'Shield',
 		description:
 			'Channel your adrenaline to heal yourself. Restore 2.5% of your lifepoints every 0.6s (1 tick) over 10.2s (17 ticks). Heal over time. Fully restore your drained stats.',
 		membersOnly: false,
-		iconPath: '/ability-icons/rejuvenate.png'
+		iconPath: '/ability-icons/rejuvenate.png',
+		weapons: null
 	},
 	{
 		name: 'Debilitate',
@@ -1790,12 +2007,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '60%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '30 seconds (50 ticks)',
 		equipment: 'None',
 		description:
 			'Perform a debilitating kick to the target. 20%-100% ability damage. Reduce the damage taken from the target by 50%. 7.8s (13 ticks)-13.8s (23 ticks) duration based on the level of shield equipped.',
 		membersOnly: false,
-		iconPath: '/ability-icons/debilitate.png'
+		iconPath: '/ability-icons/debilitate.png',
+		weapons: null
 	},
 	{
 		name: 'Preparation',
@@ -1807,12 +2026,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '20.4 seconds (34 ticks)',
 		equipment: 'Shield',
 		description:
 			'Ready yourself for the coming attacks. Remaining cooldown of Resonance and Divert are reduced by 3s (5 ticks) for every attack received. 9.6s (16 ticks) duration.',
 		membersOnly: false,
-		iconPath: '/ability-icons/preparation.png'
+		iconPath: '/ability-icons/preparation.png',
+		weapons: null
 	},
 	{
 		name: 'Barricade',
@@ -1824,12 +2045,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '60 seconds (100 ticks)',
 		equipment: 'Shield',
 		description:
 			'Summon an impenetrable dome of shields. Prevent all damage received. 4.8s (8 ticks)-10.2s (17 ticks) duration based on the level of shield equipped.',
 		membersOnly: false,
-		iconPath: '/ability-icons/barricade.png'
+		iconPath: '/ability-icons/barricade.png',
+		weapons: null
 	},
 	{
 		name: 'Natural Instinct',
@@ -1841,12 +2064,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '120 seconds (200 ticks)',
 		equipment: 'None',
 		description:
 			"Leech the targets[sic] energy. Steal the target's adrenaline and grant yourself the same amount. If the target does not have adrenaline to leech, increase your adrenaline gain by 100%. 20.4s (34 ticks) duration.",
 		membersOnly: true,
-		iconPath: '/ability-icons/natural-instinct.png'
+		iconPath: '/ability-icons/natural-instinct.png',
+		weapons: null
 	},
 	{
 		name: 'Eat Food',
@@ -1858,12 +2083,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Food',
 		description:
 			'Consume the first piece of food in your backpack. Revolution will not trigger this ability. Generates no adrenaline.',
 		membersOnly: false,
-		iconPath: '/ability-icons/eat-food.png'
+		iconPath: '/ability-icons/eat-food.png',
+		weapons: null
 	},
 	{
 		name: 'Demon Slayer',
@@ -1875,12 +2102,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '60 seconds (100 ticks)',
 		equipment: 'None',
 		description:
 			'Gain courage against demons. Increases your damage against demons by 15%. 10.2s (17 ticks) duration. Can be cast during the global cooldown. Must be manually triggered during revolution combat.',
 		membersOnly: true,
-		iconPath: '/ability-icons/demon-slayer.png'
+		iconPath: '/ability-icons/demon-slayer.png',
+		weapons: null
 	},
 	{
 		name: 'Dragon Slayer',
@@ -1892,12 +2121,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '60 seconds (100 ticks)',
 		equipment: 'None',
 		description:
 			'Gain courage against dragons. Increases your damage against dragons by 15%. 10.2s (17 ticks) duration. Can be cast during the global cooldown. Must be manually triggered during revolution combat.',
 		membersOnly: true,
-		iconPath: '/ability-icons/dragon-slayer.png'
+		iconPath: '/ability-icons/dragon-slayer.png',
+		weapons: null
 	},
 	{
 		name: 'Essence of Finality',
@@ -1909,12 +2140,14 @@ export const abilities: Ability[] = [
 		target: 'Varies',
 		damagePercent: 'Varies',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Essence of Finality amulet',
 		description:
 			'Harness the power of a special attack stored within an Essence of Finality amulet.',
 		membersOnly: true,
-		iconPath: '/ability-icons/essence-of-finality.png'
+		iconPath: '/ability-icons/essence-of-finality.png',
+		weapons: null
 	},
 	{
 		name: 'Ingenuity of the Humans',
@@ -1926,12 +2159,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '90 seconds (150 ticks)',
 		equipment: 'None',
 		description:
 			'Study the target. Your next ability or spell will have 100% Hit Chance. 6s (10 ticks) duration. Can be cast during the global cooldown. Must be manually triggered during revolution combat.',
 		membersOnly: true,
-		iconPath: '/ability-icons/ingenuity-of-the-humans.png'
+		iconPath: '/ability-icons/ingenuity-of-the-humans.png',
+		weapons: null
 	},
 	{
 		name: "Kuradal's Favour",
@@ -1943,12 +2178,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '60 seconds (100 ticks)',
 		equipment: 'None',
 		description:
 			"Flaunt your slayer prowess. Enemies killed in Kuradal's Dungeon will instantly respawn. 30s (50 ticks) duration. Can be cast during the global cooldown. Must be manually triggered during revolution combat.",
 		membersOnly: true,
-		iconPath: '/ability-icons/kuradal-s-favour.png'
+		iconPath: '/ability-icons/kuradal-s-favour.png',
+		weapons: null
 	},
 	{
 		name: 'Limitless',
@@ -1960,12 +2197,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '90 seconds (150 ticks)',
 		equipment: 'None',
 		description:
 			'Open your mind and realise your potential. Threshold abilities no longer require 50% adrenaline. 6s (10 ticks) duration. Can be cast during the global cooldown. Must be manually triggered during revolution combat.',
 		membersOnly: true,
-		iconPath: '/ability-icons/limitless.png'
+		iconPath: '/ability-icons/limitless.png',
+		weapons: null
 	},
 	{
 		name: 'Regenerate',
@@ -1977,12 +2216,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'None',
 		description:
 			'Focus your remaining adrenaline to heal yourself. Heal 2% of your maximum Life Points every 0.6s (1 tick) at the cost of 10% adrenaline. Cannot be used in combat.',
 		membersOnly: false,
-		iconPath: '/ability-icons/regenerate.png'
+		iconPath: '/ability-icons/regenerate.png',
+		weapons: null
 	},
 	{
 		name: 'Sacrifice',
@@ -1994,12 +2235,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '70%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '30 seconds (50 ticks)',
 		equipment: 'None',
 		description:
 			"Offer a sacrifice, leaving the target forsaken. 65-75% damage. Heals you for 25% (On killing blow: 100%) of the damage dealt. PvP: Disables the target's Protection Prayers for 4.8s (8 ticks).",
 		membersOnly: false,
-		iconPath: '/ability-icons/sacrifice.png'
+		iconPath: '/ability-icons/sacrifice.png',
+		weapons: null
 	},
 	{
 		name: 'Shout - Aggressive Stance',
@@ -2011,12 +2254,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Collector horn',
 		description:
 			'Shout about aggressive stance. Only used within Barbarian Assault. Generates no adrenaline.',
 		membersOnly: true,
-		iconPath: '/ability-icons/shout-aggressive-stance.png'
+		iconPath: '/ability-icons/shout-aggressive-stance.png',
+		weapons: null
 	},
 	{
 		name: 'Shout - Balanced Stance',
@@ -2028,12 +2273,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Collector horn',
 		description:
 			'Shout about balanced stance. Only used within Barbarian Assault. Generates no adrenaline.',
 		membersOnly: true,
-		iconPath: '/ability-icons/shout-balanced-stance.png'
+		iconPath: '/ability-icons/shout-balanced-stance.png',
+		weapons: null
 	},
 	{
 		name: 'Shout - Blue Egg',
@@ -2045,12 +2292,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Attacker horn',
 		description:
 			'Shout about blue eggs. Only used within Barbarian Assault. Generates no adrenaline.',
 		membersOnly: true,
-		iconPath: '/ability-icons/shout-blue-egg.png'
+		iconPath: '/ability-icons/shout-blue-egg.png',
+		weapons: null
 	},
 	{
 		name: 'Shout - Crackers',
@@ -2062,12 +2311,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Healer horn',
 		description:
 			'Shout about crackers. Only used within Barbarian Assault. Generates no adrenaline.',
 		membersOnly: true,
-		iconPath: '/ability-icons/shout-crackers.png'
+		iconPath: '/ability-icons/shout-crackers.png',
+		weapons: null
 	},
 	{
 		name: 'Shout - Defensive Stance',
@@ -2079,12 +2330,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Collector horn',
 		description:
 			'Shout about defensive stance. Only used within Barbarian Assault. Generates no adrenaline.',
 		membersOnly: true,
-		iconPath: '/ability-icons/shout-defensive-stance.png'
+		iconPath: '/ability-icons/shout-defensive-stance.png',
+		weapons: null
 	},
 	{
 		name: 'Shout - Green Egg',
@@ -2096,12 +2349,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Attacker horn',
 		description:
 			'Shout about green eggs. Only used within Barbarian Assault. Generates no adrenaline.',
 		membersOnly: true,
-		iconPath: '/ability-icons/shout-green-egg.png'
+		iconPath: '/ability-icons/shout-green-egg.png',
+		weapons: null
 	},
 	{
 		name: 'Shout - Poisoned Meat',
@@ -2113,12 +2368,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Defender horn',
 		description:
 			'Shout about poisoned meat. Only used within Barbarian Assault. Generates no adrenaline.',
 		membersOnly: true,
-		iconPath: '/ability-icons/shout-poisoned-meat.png'
+		iconPath: '/ability-icons/shout-poisoned-meat.png',
+		weapons: null
 	},
 	{
 		name: 'Shout - Poisoned Tofu',
@@ -2130,12 +2387,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Defender horn',
 		description:
 			'Shout about poisoned tofu. Only used within Barbarian Assault. Generates no adrenaline.',
 		membersOnly: true,
-		iconPath: '/ability-icons/shout-poisoned-tofu.png'
+		iconPath: '/ability-icons/shout-poisoned-tofu.png',
+		weapons: null
 	},
 	{
 		name: 'Shout - Poisoned Worms',
@@ -2147,12 +2406,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Defender horn',
 		description:
 			'Shout about poisoned worms. Only used within Barbarian Assault. Generates no adrenaline.',
 		membersOnly: true,
-		iconPath: '/ability-icons/shout-poisoned-worms.png'
+		iconPath: '/ability-icons/shout-poisoned-worms.png',
+		weapons: null
 	},
 	{
 		name: 'Shout - Red Egg',
@@ -2164,12 +2425,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Attacker horn',
 		description:
 			'Shout about red eggs. Only used within Barbarian Assault. Generates no adrenaline.',
 		membersOnly: true,
-		iconPath: '/ability-icons/shout-red-egg.png'
+		iconPath: '/ability-icons/shout-red-egg.png',
+		weapons: null
 	},
 	{
 		name: 'Shout - Tofu',
@@ -2181,11 +2444,13 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Healer horn',
 		description: 'Shout about tofu. Only used within Barbarian Assault. Generates no adrenaline.',
 		membersOnly: true,
-		iconPath: '/ability-icons/shout-tofu.png'
+		iconPath: '/ability-icons/shout-tofu.png',
+		weapons: null
 	},
 	{
 		name: 'Shout - Worms',
@@ -2197,11 +2462,13 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Healer horn',
 		description: 'Shout about worms. Only used within Barbarian Assault. Generates no adrenaline.',
 		membersOnly: true,
-		iconPath: '/ability-icons/shout-worms.png'
+		iconPath: '/ability-icons/shout-worms.png',
+		weapons: null
 	},
 	{
 		name: "Slayer's Insight",
@@ -2213,12 +2480,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '120 seconds (200 ticks)',
 		equipment: 'None',
 		description:
 			'Gain insight into the target. Increases your Slayer XP gained by 10%. 30s (50 ticks) duration. Can be cast during the global cooldown. Must be manually triggered during revolution combat.',
 		membersOnly: true,
-		iconPath: '/ability-icons/slayer-s-insight.png'
+		iconPath: '/ability-icons/slayer-s-insight.png',
+		weapons: null
 	},
 	{
 		name: 'Transfigure',
@@ -2230,12 +2499,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '180 seconds (300 ticks)',
 		equipment: 'None',
 		description:
 			'Empower your body. Incapacitates you granting immunity to all damage. After 6s (10 ticks) heal for 250% of the damage mitigated and gain immunity to Stuns and Binds for 15s (25 ticks).',
 		membersOnly: false,
-		iconPath: '/ability-icons/transfigure.png'
+		iconPath: '/ability-icons/transfigure.png',
+		weapons: null
 	},
 	{
 		name: 'Undead Slayer',
@@ -2247,12 +2518,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '60 seconds (100 ticks)',
 		equipment: 'None',
 		description:
 			'Gain courage against the undead. Increases your damage against undead by 15%. 10.2s (17 ticks) duration. Can be cast during the global cooldown. Must be manually triggered during revolution combat.',
 		membersOnly: true,
-		iconPath: '/ability-icons/undead-slayer.png'
+		iconPath: '/ability-icons/undead-slayer.png',
+		weapons: null
 	},
 	{
 		name: 'Weapon Special Attack',
@@ -2264,11 +2537,1399 @@ export const abilities: Ability[] = [
 		target: 'Varies',
 		damagePercent: 'Varies',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Special attacks',
 		description: 'Some of the most powerful weapons grant you unique special attacks.',
 		membersOnly: true,
-		iconPath: '/ability-icons/weapon-special-attack.png'
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: null
+	},
+	{
+		name: 'Aimed Strike',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -35,
+		target: 'Single',
+		damagePercent: '160%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Keenblade',
+		description: 'Carefully strike your target. 150-170% Melee damage. Hit chance is increased by 20%.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Keenblade']
+	},
+	{
+		name: 'Armadyl\'s Judgement',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '440%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Armadyl godsword',
+		description: 'Unleash the power of Armadyl. 400-480% Melee damage.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Armadyl godsword']
+	},
+	{
+		name: 'Backstab',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -75,
+		target: 'Single',
+		damagePercent: '160%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Bone dagger',
+		description: 'Stab at the target with increased effectiveness against the unsuspecting. 150-170% Melee damage. Hit chance is increased by 100% if the target is not attacking you. Reduces the target\'s Defence stat by 8%. Increases the base hit chance against the target by 2. 1m duration.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Bone dagger']
+	},
+	{
+		name: 'Blackhole',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '440%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '60 seconds (100 ticks)',
+		equipment: 'Zaros godsword',
+		description: 'Open a blackhole at your location. Creates a 7x7 area at your location. Melee attacks deal 1.25x damage while inside the area. 35-45% Melee damage per hit every 1.8s (3 ticks) to the target while it is inside the area. 19.8s (33 ticks) duration.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Zaros godsword']
+	},
+	{
+		name: 'Clobber',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -30,
+		target: 'Single',
+		damagePercent: '100%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Special attacks',
+		description: 'Hack at your target, reducing their stats. 90-110% Melee damage. Reduces the target\'s Defence stat by 5%. Reduces the target\'s Magic stat by 5%. Increases the base hit chance against the target by 3. Reduces the target\'s Magic damage by 10%. 1m duration.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Dragon hatchet', 'Crystal hatchet']
+	},
+	{
+		name: 'Disrupt',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -60,
+		target: 'Single',
+		damagePercent: '250%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Korasi\'s sword',
+		description: 'Call down a powerful storm to strike your foes. 230-270% Magic damage to the target and up to 9 additional enemies within 1 tile of the target.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Korasi\'s sword']
+	},
+	{
+		name: 'Draconic Blow',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -20,
+		target: 'Single',
+		damagePercent: '260%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Special attacks',
+		description: 'Attack with a massive blow. 240-280% Melee damage.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Dragon mace', 'Superior dragon mace']
+	},
+	{
+		name: 'Draconic Cleave',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -25,
+		target: 'Single',
+		damagePercent: '295%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Special attacks',
+		description: 'Brutally slash at the target. 275-315% Melee damage.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Dragon longsword', 'Superior dragon longsword']
+	},
+	{
+		name: 'Draconic Puncture',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '280%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Special attacks',
+		description: 'Strike the target with two quick stabs. 125-155% Melee damage per hit. 2 hits. Hit chance is increased by 15%.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Dragon dagger', 'Superior dragon dagger']
+	},
+	{
+		name: 'Draconic Slash',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '260%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Special attacks',
+		description: 'Slash with increased precision. 240-280% Melee damage. Hit chance is increased by 25%. Increases your hit chance with Slash weapons by 25% for 1m.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Dragon scimitar', 'Superior dragon scimitar']
+	},
+	{
+		name: 'Energy Drain',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '80%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Abyssal whip',
+		description: 'Whip viciously at the target, draining their energy. 75-85% Melee damage. PvP: Drains 100% of the target\'s run energy.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Abyssal whip']
+	},
+	{
+		name: 'Favour of the War God',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -100,
+		target: 'Single',
+		damagePercent: '135%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Ancient mace',
+		description: 'Attack with the might of the War God. 125-145% Melee damage. Restores Prayer points equal to 10% of the damage dealt. PvP: Ignores the target\'s protection Prayers. PvP: Reduces the target\'s Prayer points by 10% of the damage dealt.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Ancient mace']
+	},
+	{
+		name: 'Feint',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -25,
+		target: 'Single',
+		damagePercent: '275%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Special attacks',
+		description: 'Distract your foe and strike with a deadly stab. 255-295% Melee damage. Hit chance is increased by 75%.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Vesta\'s longsword', 'Superior Vesta\'s longsword']
+	},
+	{
+		name: 'Fishstabber',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -100,
+		target: 'Self',
+		damagePercent: '0%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Dragon harpoon',
+		description: 'Embrace effishiency. Increases your Fishing stat by 3.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Dragon harpoon']
+	},
+	{
+		name: 'Get Over Here!',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -75,
+		target: 'Single',
+		damagePercent: '0%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Lava whip',
+		description: 'Fully extend the whip, immobilizing foes. Stuns and Binds the target for 6s (10 ticks). PvP: Pulls your target from within 10 tiles towards you.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Lava whip']
+	},
+	{
+		name: 'Gravitate',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -60,
+		target: 'Self',
+		damagePercent: '0%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Annihilation',
+		description: 'Draw power into your weapon, increasing it\'s effectiveness. Attacks generate 1 Gravitate stack. Melee damage is increased by 1% for each stack of Gravitate. 30s (50 ticks) duration. Maximum Gravitate stacks: 20.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Annihilation']
+	},
+	{
+		name: 'Healing Blade',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '200%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Saradomin godsword',
+		description: 'Slash with an attack blessed by Saradomin. 185%-215% Melee damage. Heals you for 50% of the damage dealt. Restores Prayer points equal to 2.5% of the damage dealt.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Saradomin godsword']
+	},
+	{
+		name: 'Ice Cleave',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -60,
+		target: 'Single',
+		damagePercent: '200%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Zamorak godsword',
+		description: 'Cleave your target with a chilling blow. 185-215% Melee damage. Binds the target for 9.6s (16 ticks).',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Zamorak godsword']
+	},
+	{
+		name: 'Icy Tempest',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -30,
+		target: 'Area',
+		damagePercent: '315% (475% with 10 Primordial ice stacks)',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '15 seconds (25 ticks)',
+		equipment: 'Special attacks',
+		description: 'Destroy those around you with shards of ice from Leng. 115-135% Melee damage. 175-205% Melee damage to the target and up to 9 additional enemies within 1 game square of you. Deals an additional 18%–22% Melee damage for each Primordial Ice stack with each hit. Adrenaline cost is reduced by 12% for each Primordial Ice stack. Adrenaline requirement is unchanged. Consumes all Primordial Ice stacks. Despite the tooltip claiming that the damage is 70% effective in player killing situations, it deals the same damage as against monsters.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Dark Shard of Leng', 'Dark ice shard']
+	},
+	{
+		name: 'Igneous Showdown',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '280% (1045% against your Flamebound Rival)',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '60 seconds (100 ticks)',
+		equipment: 'Ek-ZekKil',
+		description: 'Marks your target for a fiery duel. 260%-300% Melee damage. Applies Flamebound Rival to the target. Against your Flamebound Rival: Hits an additional 3 times. Additional hits: 245-265% Damage. Generates 15% Adrenaline. Damage is 30% effective in PvP.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Ek-ZekKil']
+	},
+	{
+		name: 'Impale',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -25,
+		target: 'Single',
+		damagePercent: '140%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Special attacks',
+		description: 'Impale your target. 130-150% Melee damage. Hit chance is increased by 10%.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Rune claws', 'Rune claws + 1', 'Rune claws + 2', 'Rune claws + 3']
+	},
+	{
+		name: 'Liquefy',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '135%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Special attacks',
+		description: 'Slash at your foe with an attack from the deep. 125-145% Melee damage. Increase your Attack stat by 3 + 10%. Increase your Strength stat by 3 + 10%. Increase your Defence stat by 3 + 10%. 1m duration.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Brackish blade', 'Brine sabre']
+	},
+	{
+		name: 'Mirrorback (Noxious scythe)',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -100,
+		target: 'Self',
+		damagePercent: '0%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Noxious scythe',
+		description: 'Summon a mirrorback spider to aid you. Reduces damage taken by 50%. Reflects 50% of damage taken back at the attacker. 9.6s (16 ticks) duration. Maximum damage mitigation: 10,000.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Noxious scythe']
+	},
+	{
+		name: 'Obliterate',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '170%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Special attacks',
+		description: 'Smash through your target\'s guard. 160-180% Melee damage. Reduces the target\'s Defence stat by 30%. Increases the base hit chance against the target by 5 for 1m.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Statius\'s warhammer', 'Superior Statius\'s warhammer']
+	},
+	{
+		name: 'Powerstab',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Area',
+		damagePercent: '290%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Dragon 2h sword',
+		description: 'Plunge your sword into the ground to damage nearby enemies. 260-320% Melee damage to up to 25 additional enemies within 2 tiles of the player.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Dragon 2h sword']
+	},
+	{
+		name: 'Quick Smash',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '125%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Granite maul',
+		description: 'Crush your target with inhuman speed. 115-135% Melee damage. Can be cast during the global cooldown.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Granite maul']
+	},
+	{
+		name: 'Rampage',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -100,
+		target: 'Self',
+		damagePercent: '0%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Dragon battleaxe',
+		description: 'Release a war cry, increasing your strength. Melee attacks deal 1.2x damage. Your hit chance is decreased by 10%. Reduces all non-strength combat stats by 10%. Increase your Strength stat by 25% of the reduced levels.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Dragon battleaxe']
+	},
+	{
+		name: 'Saradomin\'s Lightning',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -100,
+		target: 'Single',
+		damagePercent: '610%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Saradomin sword',
+		description: 'Call upon Saradomin\'s power. 285-325% Magic damage per hit. 2 hits.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Saradomin sword']
+	},
+	{
+		name: 'Shove',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -25,
+		target: 'Single',
+		damagePercent: '0%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Special attacks',
+		description: 'Push the target, knocking them off-balance. Stuns and binds the target for 3.6s (6 ticks). Knocks-back the target by 1 tile.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Dragon spear', 'Zamorakian spear']
+	},
+	{
+		name: 'Slice & Dice',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '400%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Special attacks',
+		description: 'Unleash four brutal claw slashes upon your opponent. 180-220% Melee damage on first hit. 90-110% Melee damage on second hit. 45-55% Melee damage on third and fourth hit. 4 hits.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Dragon claw', 'Superior dragon claw']
+	},
+	{
+		name: 'Spear Wall',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Area',
+		damagePercent: '115%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Special attacks',
+		description: 'Spin your spear, slashing at nearby targets and reflecting incoming blows. 105-125% Melee damage to the target and up to 9 additional enemies within 1 tile of you. Reduces damage taken by 50%. Reflects 50% of damage taken back at the attacker. 4.8s (8 ticks) duration.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Vesta\'s spear', 'Superior Vesta\'s spear']
+	},
+	{
+		name: 'Sunder',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '135%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Barrelchest anchor',
+		description: 'Swing the anchor with deadly force. 125-145% Melee damage. Increases the base hit chance against the target by 4. Reduces the target\'s damage by 10%. 1m duration.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Barrelchest anchor']
+	},
+	{
+		name: 'Sunfall Slam',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -40,
+		target: 'Area',
+		damagePercent: '295%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '60 seconds (100 ticks)',
+		equipment: 'Tumeken\'s Light',
+		description: 'Slam your target with the full force of Tumeken\'s Light. 290%-300% Melee damage to the target and up to 9 additional enemies within 2 tiles of you. Your Melee abilities trigger Lesser Purifying Light. 30s (50 ticks) duration. Lesser Purifying Light 45%-55% Melee damage to up to 2 additional enemies within 4 tiles of the target.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Tumeken\'s Light']
+	},
+	{
+		name: 'Sweep',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -30,
+		target: 'Area',
+		damagePercent: '270%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Dragon halberd',
+		description: 'Slash the area in front of you, damaging enemies twice. 120-150% Melee damage per hit to the target and up to 9 additional enemies in a cone in the attack direction. 2 hits.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Dragon halberd']
+	},
+	{
+		name: 'The Final Flurry',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '491.25% (including crit modifiers)',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Varanus\'s Mercy',
+		description: 'Dispatch your target with a flurry of metal. 80-100% Melee damage on first and second hit. +25% Increased Critical Strike Chance & Critical Strike Damage on the first and second hits. 150-180% Melee damage on third Hit +50% Increased Critical Strike Chance and Critical Strike Damage on the third hit. 3 hits',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Varanus\'s Mercy']
+	},
+	{
+		name: 'Vine Call',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -60,
+		target: 'Area',
+		damagePercent: '335%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Abyssal vine whip',
+		description: 'Whip at your target, summoning a powerful jade vine to attack your opponent. 100-120% Melee damage on first hit. Creates a 3x3 area at the target. 20-25% Melee damage per hit every 1.8s (3 ticks) to up to 9 additional enemies inside the area. 10 hits.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Abyssal vine whip']
+	},
+	{
+		name: 'Warstrike',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -100,
+		target: 'Single',
+		damagePercent: '245%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Bandos godsword',
+		description: 'Swing a brutal strike with the might of Bandos. 225-265% Melee damage. Reduces the target\'s combat stats by 0.5% of the damage dealt.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Bandos godsword']
+	},
+	{
+		name: 'Weaken',
+		style: 'melee',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '80%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Darklight',
+		description: 'Strike your target with the power of Darklight. 75-85% Melee damage. Reduces the target\'s Attack stat by 6%. Reduces the target\'s Strength stat by 6%. Reduces the target\'s Defence stat by 6%. Reduces the target\'s Hit Chance by 6%. 1m duration Reduces the target\'s damage stat by 6%. 1m duration. Stat reductions are 2x as effective against demons.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Darklight']
+	},
+	{
+		name: 'Aimed Shot',
+		style: 'ranged',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -35,
+		target: 'Single',
+		damagePercent: '330%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Hand cannon',
+		description: 'Fire a well aimed shot. 300-360% Ranged damage after 3s (5 ticks). Channelled. Hit Chance is increased by 75%.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Hand cannon']
+	},
+	{
+		name: 'Balance by Force',
+		style: 'ranged',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -30,
+		target: 'Single',
+		damagePercent: '245%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Bow of the Last Guardian',
+		description: 'Strike your target with an arrow of pure anima. 235-255% Ranged damage. Reduces the number of stacks required to activate Perfect Equilibrium to 4. 30s (50 ticks) duration. Damage is 70% effective in PvP.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Bow of the Last Guardian']
+	},
+	{
+		name: 'Balanced Shot',
+		style: 'ranged',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -35,
+		target: 'Single',
+		damagePercent: '180% (240% with Guthix arrows)',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Guthix bow',
+		description: 'Fire a precise and enchanted arrow. 170-190% Ranged damage. Heals you for 60% of the damage dealt over 15s (25 ticks). Deals an additional 55-65% Magic damage if you are using Guthix arrows.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Guthix bow']
+	},
+	{
+		name: 'Chain Hit',
+		style: 'ranged',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -10,
+		target: 'Multi',
+		damagePercent: '60%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Rune throwing axe',
+		description: 'Throw an axe which bounces off the target. 55-65% Ranged damage per hit. Bounces between enemies within 3 tiles of each other up to 3 times.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Rune throwing axe']
+	},
+	{
+		name: 'Crystal Rain',
+		style: 'ranged',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -30,
+		target: 'Multi',
+		damagePercent: '140% per hit (max 700%)',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '30 seconds (50 ticks)',
+		equipment: 'Seren godbow',
+		description: 'Launch 5 pairs of crystal arrows into the air. 125-155% Ranged damage per hit. Up to 5 hits. Each pair of arrows will land randomly within 2 tiles of the target\'s centre.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Seren godbow']
+	},
+	{
+		name: 'Deep Burn',
+		style: 'ranged',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -25,
+		target: 'Single',
+		damagePercent: '195%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Strykebow',
+		description: 'Unleash the energy stored in your bow. 180-210% Ranged damage on first hit. 12.5% of all Dark Burn stacks damage per hit every 1.2s (2 ticks). 6 hits. Damage over time. Stuns and binds the target for 3s (5 ticks). Consumes all Dark Burn stacks.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Strykebow']
+	},
+	{
+		name: 'Defiance',
+		style: 'ranged',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -40,
+		target: 'Single',
+		damagePercent: '250%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Zanik\'s crossbow',
+		description: 'Shoot an empowered bolt, devastating the devout. 225-275% Ranged damage per hit. PvP: Damage is increased by 10% for each Prayer the target has active, up to a maximum of 50%.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Zanik\'s crossbow']
+	},
+	{
+		name: 'Descent of Darkness',
+		style: 'ranged',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -65,
+		target: 'Single',
+		damagePercent: '420%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Dark bow',
+		description: 'Unleash the power of darkness in two powerful shots. 190-230% Ranged damage per hit. 2 hits.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Dark bow']
+	},
+	{
+		name: 'Destructive Shot',
+		style: 'ranged',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -40,
+		target: 'Single',
+		damagePercent: '340% (400% with Zamorak arrows)',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Zamorak bow',
+		description: 'Fire two arrows at once. 160-180% Ranged damage per hit. 2 hits. Deals an additional 55-65% Magic damage if you are using Zamorak arrows.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Zamorak bow']
+	},
+	{
+		name: 'Hamstring',
+		style: 'ranged',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '160%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Special attacks',
+		description: 'Launch a shot at your target\'s legs. 150-170% Ranged damage. PvP: Prevents the target from using movement abilities for 9 seconds.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Morrigan\'s throwing axe', 'Superior Morrigan\'s throwing axe']
+	},
+	{
+		name: 'Locate',
+		style: 'ranged',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -35,
+		target: 'Self',
+		damagePercent: '0%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Decimation',
+		description: 'Activate the enchantments of Decimation, causing attacks to also fire at nearby enemies. Single-target Ranged attacks will also be cast on up to 5 additional enemies within 3 tiles of the target. 10.8s (18 ticks) duration.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Decimation']
+	},
+	{
+		name: 'Mirrorback (Noxious longbow)',
+		style: 'ranged',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -100,
+		target: 'Self',
+		damagePercent: '0%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Noxious longbow',
+		description: 'Summon a mirrorback spider to aid you. Reduces damage taken by 50%. Reflects 50% of damage taken back at the attacker. 9.6s (16 ticks) duration. Maximum damage mitigation: 10,000.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Noxious longbow']
+	},
+	{
+		name: 'Phantom strike',
+		style: 'ranged',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '305%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Special attacks',
+		description: 'Strike your target with deadly power. 120-140% Ranged damage on first hit. 30-40% Ranged damage per hit every 1.8s (3 ticks). 6 hits. Damage over time.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Morrigan\'s javelin', 'Superior Morrigan\'s javelin']
+	},
+	{
+		name: 'Powershot',
+		style: 'ranged',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -35,
+		target: 'Single',
+		damagePercent: '220%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Special attacks',
+		description: 'Take aim with a magical shot. 210-230% Ranged damage. Hit chance is increased by 40%.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Magic longbow', 'Magic composite bow']
+	},
+	{
+		name: 'Restorative Shot',
+		style: 'ranged',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -30,
+		target: 'Single',
+		damagePercent: '140% (200% with Saradomin arrows)',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Saradomin bow',
+		description: 'Fire a precise and enchanted arrow. 135-145% Ranged damage. Heals you for 100% of the damage dealt over 15s (25 ticks). Deals an additional 55-65% Magic damage if you are using Saradomin arrows.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Saradomin bow']
+	},
+	{
+		name: 'Shadowfall',
+		style: 'ranged',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -65,
+		target: 'Single',
+		damagePercent: '465%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Gloomfire bow',
+		description: 'Unleash 2 arrows, marking your target to be struck by shadows. 85%–105% Ranged damage on first and second hit. 255%–295% Ranged damage on third hit 3 hits',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Gloomfire bow']
+	},
+	{
+		name: 'Soulshot',
+		style: 'ranged',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '100-120% (300-320% if the target is level 99+ Magic)',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Seercull',
+		description: 'Unleash a shot that shatters the target\'s magical prowess. 100-120% Ranged damage. Damage is increased by 2-200% based on the target\'s Magic stat. Reduces the target\'s Magic stat by 5%.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Seercull']
+	},
+	{
+		name: 'Split Soul',
+		style: 'ranged',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -25,
+		target: 'Self',
+		damagePercent: '0%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Eldritch crossbow',
+		description: 'Unleash the dark power of your weapon. 400% of the life points you would have gained from the Soul Split curse is instead dealt to your target. 15s (25 ticks) duration.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Eldritch crossbow']
+	},
+	{
+		name: 'Twin fang',
+		style: 'ranged',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '260%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Magic shortbow',
+		description: 'A quick double attack. 115-145% Ranged damage per hit. 2 hits. Hit chance is reduced by 30%.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Magic shortbow']
+	},
+	{
+		name: 'Twin Shot',
+		style: 'ranged',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -35,
+		target: 'Single',
+		damagePercent: '120%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Quickbow',
+		description: 'Fire two quick shots. 55-65% Ranged damage per hit. 2 hits. Hit chance is increased by 50%.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Quickbow']
+	},
+	{
+		name: 'Claws of Guthix',
+		style: 'magic',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -25,
+		target: 'Single',
+		damagePercent: '220%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Guthix staff',
+		description: 'Call upon the divine energy of Guthix to perform a powerful magical attack. 200-240% Magic damage. Reduces the target\'s Defence stat by 5% Increase the base hit chance against the target by 5 for 1m.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Guthix staff']
+	},
+	{
+		name: 'Devour',
+		style: 'magic',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '220%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Obliteration',
+		description: 'Cast a powerful hex at your target, limiting their ability to heal. 200-240% Magic damage. Reduces the targets healing by 50% for 15s (25 ticks).',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Obliteration']
+	},
+	{
+		name: 'Flames of Zamorak',
+		style: 'magic',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -25,
+		target: 'Single',
+		damagePercent: '220%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Zamorak staff',
+		description: 'Call upon the power of Zamorak to perform a powerful magical attack. 200-240% Magic damage. Reduces the target\'s Magic stat by 5%. Reduces the target\'s hit chance by 5% for 1m.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Zamorak staff']
+	},
+	{
+		name: 'From the Shadows',
+		style: 'magic',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '300%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Staff of Sliske',
+		description: 'Summon a wight from the Shadow Realm to attack for you. 55-65% Magic damage per hit every 2.4s (4 ticks). 5 hits.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Staff of Sliske']
+	},
+	{
+		name: 'Iban Blast',
+		style: 'magic',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '365%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Iban\'s staff',
+		description: 'Attack with a powerful blast of chaos magic. 340-390% Magic damage.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Iban\'s staff']
+	},
+	{
+		name: 'Instability',
+		style: 'magic',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '130%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '60 seconds (100 ticks)',
+		equipment: 'Fractured Staff of Armadyl',
+		description: 'Launch an unstable blast at your target. 120-140% Magic damage. On critical strike: Launch a Lightning Surge at your target dealing 70-90% Magic damage. 30s (50 ticks) duration.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Fractured Staff of Armadyl']
+	},
+	{
+		name: 'Miasmic Barrage',
+		style: 'magic',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '170%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Special attacks',
+		description: 'Unleash a barrage of miasma. 200-240% Magic damage to up to 8 additional enemies within 1 tile of the target. Reduces the attack rate of enemies hit by 1 for 15s (25 ticks). PvP: Reduces the adrenaline gain of all enemies hit by 50% for 15s (25 ticks).',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Zuriel\'s staff', 'Superior Zuriel\'s staff']
+	},
+	{
+		name: 'Mirrorback (Noxious staff)',
+		style: 'magic',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -100,
+		target: 'Self',
+		damagePercent: '0%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Noxious staff',
+		description: 'Summon a mirrorback spider to aid you. Reduces damage taken by 50%. Reflects 50% of damage taken back at the attacker. 9.6s (16 ticks) duration. Maximum damage mitigation: 10,000.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Noxious staff']
+	},
+	{
+		name: 'Power of Darkness',
+		style: 'magic',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -100,
+		target: 'Self',
+		damagePercent: '0%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Staff of darkness',
+		description: 'Coat yourself in a aura of darkness. Reduces damage taken by 25%. Reflects 25% of damage taken back at the attacker. 19.8s (33 ticks) duration.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Staff of darkness']
+	},
+	{
+		name: 'Power of Light',
+		style: 'magic',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -100,
+		target: 'Self',
+		damagePercent: '0%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Staff of light',
+		description: 'Protect yourself with a veil of light. Reduces melee damage taken by 50%. 1m duration.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Staff of light']
+	},
+	{
+		name: 'Reap',
+		style: 'magic',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -45,
+		target: 'Single',
+		damagePercent: '290%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Special attacks',
+		description: 'Shock your target with a blast of magic. 270-310% Magic damage. On killing blow: Generates 20% adrenaline.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Penance trident', 'Penance master trident']
+	},
+	{
+		name: 'Rune Flame',
+		style: 'magic',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -35,
+		target: 'Single',
+		damagePercent: '130%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Special attacks',
+		description: 'Release a runic blast. 120-140% Magic damage. Hit chance is increased by 25%.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Mindspike (air)', 'Mindspike (water)', 'Mindspike (earth)', 'Mindspike (fire)']
+	},
+	{
+		name: 'Saradomin Strike',
+		style: 'magic',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -25,
+		target: 'Single',
+		damagePercent: '220%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Saradomin staff',
+		description: 'Call upon the power of Saradomin to perform a powerful magical attack. 200-240% Magic damage. PvP: Reduces the target\'s Prayer points by 30%.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Saradomin staff']
+	},
+	{
+		name: 'Soulfire',
+		style: 'magic',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -35,
+		target: 'Single',
+		damagePercent: '1255%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '45 seconds (75 ticks)',
+		equipment: 'Roar of Awakening',
+		description: 'Wildly release a dark flame to ignite your target, causing them to Burn. 130-160% Magic damage on first hit. 170-200% Magic damage per hit every 1.8s (3 ticks). 7 hits. Damage over time Generates Conflagrate. Damage is 30% effective in PvP. Conflagrate Your next Combust within 15s (25 ticks) deals 40% increased damage.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Roar of Awakening']
+	},
+	{
+		name: 'Tempest of Armadyl',
+		style: 'magic',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -50,
+		target: 'Single',
+		damagePercent: '300%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Armadyl battlestaff',
+		description: 'Perform a barrage of magical attacks at your opponent. 45%–55% Magic damage per hit every 0.6s (1 tick). 5 hits. Channelled. Deals an additional 5% magic damage with each hit.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Armadyl battlestaff']
+	},
+	{
+		name: 'The Last Command',
+		style: 'magic',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -35,
+		target: 'Single',
+		damagePercent: '260% (up to 455% for targets below 25% life points)',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '0 seconds (0 ticks)',
+		equipment: 'Legatus\'s Emberstaff',
+		description: 'Immolate your target with a blast of chaos magic. 240%-280% Magic damage. Deals 1% increased damage for each 1% life points the target is missing, up to a maximum of 75%. Damage is 70% effective in PvP.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Legatus\'s Emberstaff']
+	},
+	{
+		name: 'Death Essence',
+		style: 'necromancy',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -30,
+		target: 'Single',
+		damagePercent: '400%',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '60 seconds (100 ticks)',
+		equipment: 'Omni guard',
+		description: 'Use the power of the Omni guard to charge yourself with power. 360-440% Necromancy damage. Touch of Death, Finger of Death, Death Skulls: Immediately readies Death Spark. 30s (50 ticks) duration. On cast: Immediately readies Death Spark.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Omni guard']
+	},
+	{
+		name: 'Death Grasp',
+		style: 'necromancy',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -25,
+		target: 'Single',
+		damagePercent: '450% (930% with 12 Necrosis stacks)',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '30 seconds (50 ticks)',
+		equipment: 'Special attacks',
+		description: 'Grasp the target with necrotic energy. 405-495% Necromancy damage. Stuns and binds the target for 4.8s (8 ticks). Deals an additional 40% Necromancy damage for each Necrosis stack. Consumes all Necrosis stacks. Damage is 40% effective in PvP.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Death guard (tier 70)', 'Death guard (tier 80)', 'Death guard (tier 90)']
+	},
+	{
+		name: 'Soul Crush',
+		style: 'necromancy',
+		requiredSkill: 'Constitution',
+		requiredLevel: 1,
+		type: 'Special',
+		adrenaline: -25,
+		target: 'Single',
+		damagePercent: '150% (900% with 5 Residual Soul stacks)',
+		damageVariants: null,
+		hitCountVariants: null,
+		cooldownText: '60 seconds (100 ticks)',
+		equipment: 'Devourer\'s Guard',
+		description: 'Crush your target with the souls of the undead. 135-165% Necromancy damage, increased by 135-165% Necromancy damage for each Residual Soul stack. Soul Sap, Soul Strike, Volley of Souls, Spectral Scythe: Immediately readies Soul Reave. 30s (50 ticks) duration. On cast: Immediately readies Soul Reave. Consumes all Residual Soul stacks. Damage is 40% effective in PvP.',
+		membersOnly: true,
+		iconPath: '/ability-icons/weapon-special-attack.png',
+		weapons: ['Devourer\'s Guard']
 	},
 	{
 		name: 'Aggressive Stance',
@@ -2280,12 +3941,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Attacker horn',
 		description:
 			'Adopt an aggressive fighting stance. Only used within Barbarian Assault. Generates no adrenaline.',
 		membersOnly: true,
-		iconPath: '/ability-icons/aggressive-stance.png'
+		iconPath: '/ability-icons/aggressive-stance.png',
+		weapons: null
 	},
 	{
 		name: 'Balanced Stance',
@@ -2297,12 +3960,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Attacker horn',
 		description:
 			'Adopt a balanced fighting stance. Only used within Barbarian Assault. Generates no adrenaline.',
 		membersOnly: true,
-		iconPath: '/ability-icons/balanced-stance.png'
+		iconPath: '/ability-icons/balanced-stance.png',
+		weapons: null
 	},
 	{
 		name: 'Defensive Stance',
@@ -2314,12 +3979,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'Attacker horn',
 		description:
 			'Adopt a defensive fighting stance. Only used within Barbarian Assault. Generates no adrenaline.',
 		membersOnly: true,
-		iconPath: '/ability-icons/defensive-stance.png'
+		iconPath: '/ability-icons/defensive-stance.png',
+		weapons: null
 	},
 	{
 		name: 'Siphon',
@@ -2331,12 +3998,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '60 seconds (100 ticks)',
 		equipment: 'None',
 		description:
 			'Siphon strength from the target. Steals 10% adrenaline from the target. Grants immunity to Siphon for 6s (10 ticks).',
 		membersOnly: false,
-		iconPath: '/ability-icons/siphon.png'
+		iconPath: '/ability-icons/siphon.png',
+		weapons: null
 	},
 	{
 		name: 'Incite',
@@ -2348,12 +4017,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '0 seconds (0 ticks)',
 		equipment: 'None',
 		description:
 			'Encourage the target to attack you. Increases the likelihood that your attacks will cause the target to attack you. Toggleable.',
 		membersOnly: false,
-		iconPath: '/ability-icons/incite.png'
+		iconPath: '/ability-icons/incite.png',
+		weapons: null
 	},
 	{
 		name: "Tuska's Wrath",
@@ -2365,12 +4036,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '80%',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '15 seconds (25 ticks)',
 		equipment: 'None',
 		description:
 			'Invoke the wrath of Tuska on the target. 75-85% damage. If the target is your slayer assignment, the attack is empowered and deals 10,000% Slayer level damage. Empowered effect cooldown: 120s (200 ticks). Damage cap: 15,000',
 		membersOnly: true,
-		iconPath: '/ability-icons/tuska-s-wrath.png'
+		iconPath: '/ability-icons/tuska-s-wrath.png',
+		weapons: null
 	},
 	{
 		name: 'Shatter',
@@ -2382,12 +4055,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: 'Varies',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '120 seconds (200 ticks)',
 		equipment: 'Any',
 		description:
 			'Shatter any shards on the target. Consumes all Storm Shards stacks on the target and deals 100% of the total damage applied.',
 		membersOnly: true,
-		iconPath: '/ability-icons/shatter.png'
+		iconPath: '/ability-icons/shatter.png',
+		weapons: null
 	},
 	{
 		name: 'Storm Shards',
@@ -2399,12 +4074,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: '0% (stores 85%)',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '30 seconds (50 ticks)',
 		equipment: 'Any',
 		description:
 			'Hurl a Storm Shard at the target. Applies 1 Storm Shards stack to the target for 80-90% damage. Maximum stacks: 10. Damage is 33% effective in PvP.',
 		membersOnly: true,
-		iconPath: '/ability-icons/storm-shards.png'
+		iconPath: '/ability-icons/storm-shards.png',
+		weapons: null
 	},
 	{
 		name: "Guthix's Blessing",
@@ -2416,12 +4093,14 @@ export const abilities: Ability[] = [
 		target: 'Self',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '300 seconds (500 ticks)',
 		equipment: 'None',
 		description:
 			'Invoke a butterfly that heals you. Heals you for 8% Maximum Life Points every 1.8s (3 ticks). 9s (15 ticks) duration.',
 		membersOnly: true,
-		iconPath: '/ability-icons/guthix-s-blessing.png'
+		iconPath: '/ability-icons/guthix-s-blessing.png',
+		weapons: null
 	},
 	{
 		name: 'Reprisal',
@@ -2433,12 +4112,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: 'Varies',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '60 seconds (100 ticks)',
 		equipment: 'None',
 		description:
 			'Use the targets power against them. Stores 100% of damage taken over 6s (10 ticks). After the duration, deals 100% of the damage stored. Can be recast within its duration. Damage dealt has diminishing returns in PvP.',
 		membersOnly: true,
-		iconPath: '/ability-icons/reprisal.png'
+		iconPath: '/ability-icons/reprisal.png',
+		weapons: null
 	},
 	{
 		name: 'Onslaught',
@@ -2450,12 +4131,14 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: 'Varies',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '120 seconds (200 ticks)',
 		equipment: 'Any',
 		description:
 			'Assault the target with unbridled power. 100-120% damage per hit every 1.2s (2 ticks). 26 hits. Channeled. Deals an additional 18-22% damage with each hit. Consumes up to 25% adrenaline per hit. If you run out of adrenaline, 25% of the damage dealt will be dealt to self per hit. After 10 hits an additional 1,000 damage is dealt to self per hit.',
 		membersOnly: true,
-		iconPath: '/ability-icons/onslaught.png'
+		iconPath: '/ability-icons/onslaught.png',
+		weapons: null
 	},
 	{
 		name: 'Ice Asylum',
@@ -2467,11 +4150,13 @@ export const abilities: Ability[] = [
 		target: 'Area',
 		damagePercent: 'N/A',
 		damageVariants: null,
+		hitCountVariants: null,
 		cooldownText: '300 seconds (500 ticks)',
 		equipment: 'None',
 		description:
 			'Summon a healing crystal. Creates a 1x1 area at your location. Heals anyone within 7 tiles of the area for 0-7% of their Maximum Life Points every 3.6s (6 ticks). 300% Maximum Life Points heal capacity. 21.6s (36 ticks) duration. Healing is increased the closer you are to the area.',
 		membersOnly: true,
-		iconPath: '/ability-icons/ice-asylum.png'
+		iconPath: '/ability-icons/ice-asylum.png',
+		weapons: null
 	}
 ];

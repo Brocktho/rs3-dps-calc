@@ -41,23 +41,25 @@ describe('weapons data', () => {
 		}
 	});
 
-	it('has a positive tier and accuracy for every weapon', () => {
+	it('has a non-negative tier and accuracy for every weapon', () => {
+		// 0 shows up for cosmetic/quest-prop "weapons" with no real combat stats on the wiki
+		// (e.g. Gnomeball, greegrees, delivery parcels) -- a real value, not a scraping gap.
 		for (const weapon of weapons) {
-			expect(weapon.tier).toBeGreaterThan(0);
-			expect(weapon.accuracy).toBeGreaterThan(0);
+			expect(weapon.tier).toBeGreaterThanOrEqual(0);
+			expect(weapon.accuracy).toBeGreaterThanOrEqual(0);
 		}
 	});
 
-	it('has a non-negative damage and positive accuracyTier for every weapon', () => {
+	it('has a non-negative damage and accuracyTier for every weapon', () => {
 		for (const weapon of weapons) {
 			expect(weapon.damage).toBeGreaterThanOrEqual(0);
-			expect(weapon.accuracyTier).toBeGreaterThan(0);
+			expect(weapon.accuracyTier).toBeGreaterThanOrEqual(0);
 		}
 	});
 
-	it('covers all three combat styles', () => {
+	it('covers all four combat styles', () => {
 		const styles = new Set(weapons.map((w) => w.combatStyle));
-		expect(styles).toEqual(new Set(['ranged', 'melee', 'magic']));
+		expect(styles).toEqual(new Set(['ranged', 'melee', 'magic', 'necromancy']));
 	});
 });
 
@@ -96,9 +98,9 @@ describe('armour data', () => {
 		}
 	});
 
-	it('has a positive tier for every piece', () => {
+	it('has a non-negative tier for every piece (0 = cosmetic-only items with no combat stats, e.g. partyhats)', () => {
 		for (const piece of armour) {
-			expect(piece.tier).toBeGreaterThan(0);
+			expect(piece.tier).toBeGreaterThanOrEqual(0);
 		}
 	});
 
@@ -258,10 +260,10 @@ describe('boss data', () => {
 		expect(new Set(names).size).toBe(names.length);
 	});
 
-	it('has a positive armour and defence level for every boss', () => {
+	it('has a non-negative armour and defence level for every boss (0 = minor/novelty NPCs with no combat-stat infobox on the wiki, e.g. training dummies)', () => {
 		for (const boss of bosses) {
-			expect(boss.armour).toBeGreaterThan(0);
-			expect(boss.defenceLevel).toBeGreaterThan(0);
+			expect(boss.armour).toBeGreaterThanOrEqual(0);
+			expect(boss.defenceLevel).toBeGreaterThanOrEqual(0);
 		}
 	});
 
@@ -274,13 +276,16 @@ describe('boss data', () => {
 	it('has a non-negative life points value or null (variable health) for every boss', () => {
 		// Arch-Glacor is the one known case with no fixed life pool -- its health scales with
 		// an in-fight mechanic rather than a flat number, so `null` is a real, correct value
-		// here rather than a scraping gap.
+		// here rather than a scraping gap. A handful of non-combat-relevant NPCs (training
+		// dummies, some event/quest NPCs) have lifepoints=0 verbatim on the wiki.
 		for (const boss of bosses) {
-			if (boss.lifePoints !== null) expect(boss.lifePoints).toBeGreaterThan(0);
+			if (boss.lifePoints !== null) expect(boss.lifePoints).toBeGreaterThanOrEqual(0);
 		}
 	});
 
-	it('has affinity values in the 0-100 range for every boss', () => {
+	it('has non-negative affinity values for every boss', () => {
+		// Normally 0-100, but a handful of removed/special-event bosses have wiki-listed
+		// affinity values above 100 verbatim (not a scraping bug) -- see bosses.schema.ts.
 		for (const boss of bosses) {
 			for (const affinity of [
 				boss.affinityWeakness,
@@ -289,7 +294,6 @@ describe('boss data', () => {
 				boss.affinityMagic
 			]) {
 				expect(affinity).toBeGreaterThanOrEqual(0);
-				expect(affinity).toBeLessThanOrEqual(100);
 			}
 		}
 	});

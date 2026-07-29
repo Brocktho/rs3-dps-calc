@@ -40,8 +40,8 @@ def fetch_wikitext(page_title: str) -> str | None:
     return data['parse']['wikitext']['*']
 
 
-def extract_infobox_bonuses(wikitext: str) -> dict | None:
-    idx = wikitext.find('{{Infobox Bonuses')
+def find_balanced_template(wikitext: str, marker: str) -> str | None:
+    idx = wikitext.find(marker)
     if idx == -1:
         return None
     depth = 0
@@ -59,12 +59,90 @@ def extract_infobox_bonuses(wikitext: str) -> dict | None:
                 break
             continue
         i += 1
-    block = wikitext[start:i]
+    return wikitext[start:i]
+
+
+def parse_template_fields(block: str) -> dict:
     fields = {}
     for line in block.split('\n'):
         m = re.match(r'\|\s*([a-zA-Z0-9_]+)\s*=\s*(.*)', line.strip())
         if m:
             fields[m.group(1)] = m.group(2).strip()
+    return fields
+
+
+DEGRADED_VERSION_LABELS = {'degraded', 'broken', 'inactive'}
+
+
+def collapse_versioned_fields(raw_fields: dict) -> dict:
+    """Collapses versioned fields (fieldN=...) down to a single version's value -- e.g.
+    Ek-ZekKil has damageTier1=95/damageTier2=100 (Normal vs Innate Mastery upgrade), and this
+    project's convention for items with multiple upgrade versions is to use the highest
+    version's stats (opposite of bosses.ts, which uses version1 -- see weapons.ts's own doc
+    comment). BUT version numbering is not a reliable "better" ordering by itself -- e.g. Royal
+    crossbow has version1=complete/version2=degraded, where the degraded (broken/uncharged) form
+    is the HIGHER-numbered version. So: prefer the highest-numbered version whose own
+    `versionN` label isn't a known degraded-state label; only fall back to the plain highest
+    version if every version is unlabeled or all labeled versions look degraded.
+    """
+    versioned_bases: dict[str, int] = {}
+    for key in raw_fields:
+        m = re.match(r'^(.*?)(\d+)$', key)
+        if m and m.group(1):
+            base, num = m.group(1), int(m.group(2))
+            versioned_bases[base] = max(versioned_bases.get(base, 0), num)
+
+    max_version_num = versioned_bases.get('version', 0)
+    chosen_version = max_version_num
+    if max_version_num > 0:
+        good_versions = [
+            n for n in range(1, max_version_num + 1)
+            if raw_fields.get(f'version{n}', '').strip().lower() not in DEGRADED_VERSION_LABELS
+        ]
+        if good_versions:
+            chosen_version = max(good_versions)
+
+    fields: dict[str, str] = {}
+    for key, value in raw_fields.items():
+        m = re.match(r'^(.*?)(\d+)$', key)
+        if m and m.group(1) in versioned_bases:
+            base, num = m.group(1), int(m.group(2))
+            if num == chosen_version:
+                fields[base] = value
+        else:
+            if key not in versioned_bases:
+                fields[key] = value
+    return fields
+
+
+def extract_infobox_bonuses(wikitext: str) -> dict | None:
+    block = find_balanced_template(wikitext, '{{Infobox Bonuses')
+    if block is None:
+        return None
+    fields = collapse_versioned_fields(parse_template_fields(block))
+
+    # `members` (Yes/No) lives on the separate {{Infobox Item}} template on the same page, not
+    # {{Infobox Bonuses}} -- merge it in under the same key so callers only need one dict.
+    #
+    # {{Infobox Bonuses}}'s own `image` field is the "equipped" render -- a full character model
+    # wearing/wielding the item (e.g. "Rune 2h sword equipped.png") -- NOT a usable inventory
+    # icon. {{Infobox Item}}'s `image` field (e.g. "[[File:Rune 2h sword.png]]") is the actual
+    # inventory icon and is what fetch_item_icons.py should use; stored under a separate
+    # `inventory_image` key so it doesn't collide with (or get shadowed by) the bonuses block's
+    # own `image` field.
+    item_block = find_balanced_template(wikitext, '{{Infobox Item')
+    if item_block is not None:
+        # {{Infobox Item}} has its own independent version numbering (new/used/broken, or dye
+        # variants), often with NO bare `image` field at all -- only `image1`/`image2`/... --
+        # so this needs the same version-collapse as {{Infobox Bonuses}} gets, or `image` comes
+        # back empty and fetch_item_icons.py silently falls back to the equipped-render image
+        # from the Bonuses block instead (seen on dyed weapon variants like "Ek-ZekKil (blood)").
+        item_fields = collapse_versioned_fields(parse_template_fields(item_block))
+        if 'members' in item_fields:
+            fields['members'] = item_fields['members']
+        if 'image' in item_fields:
+            fields['inventory_image'] = item_fields['image']
+
     return fields
 
 

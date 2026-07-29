@@ -95,6 +95,14 @@ export interface ModifierContext {
 	combatStyle: CombatStyle | null;
 	ringOfVigourActive: boolean;
 	furyOfTheSmallActive: boolean;
+	/** How many pieces of each armour set (keyed by Armour.setName, e.g. "Vestments of havoc
+	 *  armour") are currently equipped -- generalizes across every set-effect armour, not just
+	 *  Vestments, so a new set only needs new Modifier entries gated on this count, never a new
+	 *  ModifierContext field. Absent/0 for sets with nothing equipped. */
+	setPieceCounts: Record<string, number>;
+	/** Whether the player's main-hand is currently a melee weapon -- Vestments of havoc's 4-piece
+	 *  bonus (+20% max adrenaline) is conditioned on this, not just the armour itself. */
+	hasMeleeWeaponEquipped: boolean;
 }
 
 function isResourceModifierActive(
