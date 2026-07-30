@@ -1866,6 +1866,24 @@ export const VESTMENTS_OF_HAVOC_4PC_CAP_MODIFIER: PassiveModifier = {
 		(ctx.setPieceCounts[VESTMENTS_OF_HAVOC_SET_NAME] ?? 0) >= 4 && ctx.hasMeleeWeaponEquipped
 };
 
+/** Adrenaline renewal potion: not a real ability, just modeled as one so it can be placed on the
+ *  timeline like an off-GCD utility -- its own `adrenaline` field is 0 (see data/abilities.ts),
+ *  with all of its gain coming from this buffWindow perTickIncome modifier across its own
+ *  10-tick duration (parsed off its description by parseBuffInfo/resolveBuffs, same mechanism as
+ *  Meteor Strike/Havoc above). */
+export const ADRENALINE_RENEWAL_PER_TICK = 4;
+
+export const ADRENALINE_RENEWAL_MODIFIER: BuffWindowModifier = {
+	kind: 'buffWindow',
+	subject: 'player',
+	resourceId: 'adrenaline',
+	resourceAspect: 'perTickIncome',
+	buffAbilityName: 'Adrenaline renewal potion',
+	effect: { operation: 'add', value: ADRENALINE_RENEWAL_PER_TICK },
+	intervalTicks: 1,
+	source: { label: 'Adrenaline renewal potion' }
+};
+
 const ADRENALINE_MODIFIERS: Modifier[] = [
 	RING_OF_VIGOUR_MODIFIER,
 	IMBUE_SHADOWS_ADRENALINE_MODIFIER,
@@ -1873,6 +1891,7 @@ const ADRENALINE_MODIFIERS: Modifier[] = [
 	METEOR_STRIKE_BASIC_MULTIPLIER_MODIFIER,
 	FURY_OF_THE_SMALL_MODIFIER,
 	HAVOC_REGEN_MODIFIER,
+	ADRENALINE_RENEWAL_MODIFIER,
 	VESTMENTS_OF_HAVOC_4PC_CAP_MODIFIER
 ];
 
