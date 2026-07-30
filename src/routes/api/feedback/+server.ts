@@ -25,6 +25,14 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 		error(400, 'Missing feedback message');
 	}
 
+	// Honeypot: a hidden "website" input real users never see or fill. Only a bot blindly filling
+	// every field on the form would populate it -- report success without writing anything, so
+	// the bot has no signal that it was caught.
+	const honeypot = body && typeof body === 'object' ? (body as { website?: unknown }).website : '';
+	if (typeof honeypot === 'string' && honeypot.trim() !== '') {
+		return json({ ok: true });
+	}
+
 	const message = sanitizeMessage(rawMessage);
 	if (!message) {
 		error(400, 'Feedback message is empty');

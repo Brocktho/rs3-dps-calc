@@ -656,12 +656,16 @@
 	let feedbackStatus: 'idle' | 'submitting' | 'sent' | 'error' = $state('idle');
 	let feedbackSnapshotUrl = $state('');
 	let feedbackIncludeSnapshot = $state(true);
+	// Honeypot: hidden from real users via CSS, so only a bot filling every input on the form
+	// would populate it. Left non-empty on submit -> silently drop the request server-side.
+	let feedbackHoneypot = $state('');
 
 	async function openFeedback() {
 		feedbackText = '';
 		feedbackStatus = 'idle';
 		feedbackIncludeSnapshot = true;
 		feedbackSnapshotUrl = '';
+		feedbackHoneypot = '';
 		feedbackOpen = true;
 		try {
 			feedbackSnapshotUrl = await buildShareUrl();
@@ -685,7 +689,7 @@
 			const response = await fetch('/api/feedback', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ message: fullMessage })
+				body: JSON.stringify({ message: fullMessage, website: feedbackHoneypot })
 			});
 			if (!response.ok) throw new Error('Request failed');
 			feedbackStatus = 'sent';
@@ -1262,6 +1266,17 @@
 			onkeydown={(e) => e.stopPropagation()}
 		>
 			<h2>Submit feedback</h2>
+			<div class="feedback-honeypot" aria-hidden="true">
+				<label for="feedback-website">Website</label>
+				<input
+					id="feedback-website"
+					name="website"
+					type="text"
+					tabindex="-1"
+					autocomplete="off"
+					bind:value={feedbackHoneypot}
+				/>
+			</div>
 			<textarea
 				bind:value={feedbackText}
 				placeholder="Found a bug or have a suggestion? Let me know."
@@ -2205,6 +2220,7 @@
 	}
 
 	.feedback-modal {
+		position: relative;
 		background: #1c160c;
 		border: 2px solid #5a4a2c;
 		border-radius: 8px;
@@ -2217,6 +2233,15 @@
 	.feedback-modal h2 {
 		margin: 0 0 1rem;
 		font-size: 1.1rem;
+	}
+
+	.feedback-honeypot {
+		position: absolute;
+		left: -9999px;
+		top: -9999px;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
 	}
 
 	.feedback-modal textarea {
