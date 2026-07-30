@@ -603,6 +603,19 @@
 
 	let shareStatus: 'idle' | 'copying' | 'copied' | 'error' = $state('idle');
 
+	async function buildShareUrl(): Promise<string> {
+		const state: ShareableState = {
+			setups: $state.snapshot(setups),
+			activeSetupIndex,
+			selectedBossName
+		};
+		const encoded = await encodeShareState(state);
+		const url = new URL(window.location.href);
+		url.search = '';
+		url.searchParams.set(SHARE_QUERY_PARAM, encoded);
+		return url.toString();
+	}
+
 	function applyShareableState(state: Partial<ShareableState>) {
 		if (typeof state.selectedBossName === 'string') selectedBossName = state.selectedBossName;
 		if (Array.isArray(state.setups) && state.setups.length > 0 && state.setups.every(isValidSetup)) {
@@ -619,16 +632,8 @@
 	async function shareLoadout() {
 		shareStatus = 'copying';
 		try {
-			const state: ShareableState = {
-				setups: $state.snapshot(setups),
-				activeSetupIndex,
-				selectedBossName
-			};
-			const encoded = await encodeShareState(state);
-			const url = new URL(window.location.href);
-			url.search = '';
-			url.searchParams.set(SHARE_QUERY_PARAM, encoded);
-			await navigator.clipboard.writeText(url.toString());
+			const url = await buildShareUrl();
+			await navigator.clipboard.writeText(url);
 			window.history.replaceState(null, '', url);
 			shareStatus = 'copied';
 		} catch {
@@ -641,11 +646,20 @@
 	let feedbackOpen = $state(false);
 	let feedbackText = $state('');
 	let feedbackStatus: 'idle' | 'submitting' | 'sent' | 'error' = $state('idle');
+	let feedbackSnapshotUrl = $state('');
+	let feedbackIncludeSnapshot = $state(true);
 
-	function openFeedback() {
+	async function openFeedback() {
 		feedbackText = '';
 		feedbackStatus = 'idle';
+		feedbackIncludeSnapshot = true;
+		feedbackSnapshotUrl = '';
 		feedbackOpen = true;
+		try {
+			feedbackSnapshotUrl = await buildShareUrl();
+		} catch {
+			feedbackSnapshotUrl = '';
+		}
 	}
 
 	function closeFeedback() {
@@ -658,10 +672,12 @@
 
 		feedbackStatus = 'submitting';
 		try {
+			const snapshotUrl = feedbackIncludeSnapshot ? feedbackSnapshotUrl : null;
+			const fullMessage = snapshotUrl ? `${message}\n\nLoadout snapshot: ${snapshotUrl}` : message;
 			const response = await fetch('/api/feedback', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ message })
+				body: JSON.stringify({ message: fullMessage })
 			});
 			if (!response.ok) throw new Error('Request failed');
 			feedbackStatus = 'sent';
@@ -1241,6 +1257,15 @@
 				maxlength="2000"
 				rows="6"
 			></textarea>
+			<label class="feedback-snapshot-toggle">
+				<input type="checkbox" bind:checked={feedbackIncludeSnapshot} />
+				Include a link to my current loadout so it can be recreated
+			</label>
+			{#if feedbackIncludeSnapshot}
+				<p class="feedback-snapshot-url">
+					{feedbackSnapshotUrl || 'Generating snapshot link...'}
+				</p>
+			{/if}
 			<div class="feedback-modal-actions">
 				<span class="feedback-status">
 					{#if feedbackStatus === 'sent'}
@@ -1254,7 +1279,9 @@
 					type="button"
 					class="share-button"
 					onclick={submitFeedback}
-					disabled={feedbackStatus === 'submitting' || feedbackText.trim().length === 0}
+					disabled={feedbackStatus === 'submitting' ||
+						feedbackText.trim().length === 0 ||
+						(feedbackIncludeSnapshot && !feedbackSnapshotUrl)}
 				>
 					{feedbackStatus === 'submitting' ? 'Sending...' : 'Send'}
 				</button>
@@ -2191,6 +2218,26 @@
 		color: #e8dcc0;
 		font: inherit;
 		padding: 0.6rem;
+	}
+
+	.feedback-snapshot-toggle {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		margin-top: 0.75rem;
+		font-size: 0.85rem;
+		color: #cbb98e;
+	}
+
+	.feedback-snapshot-url {
+		margin: 0.35rem 0 0;
+		padding: 0.4rem 0.6rem;
+		background: #100c08;
+		border: 1px solid #5a4a2c;
+		border-radius: 4px;
+		font-size: 0.75rem;
+		color: #8a7c5a;
+		overflow-wrap: anywhere;
 	}
 
 	.feedback-modal-actions {
