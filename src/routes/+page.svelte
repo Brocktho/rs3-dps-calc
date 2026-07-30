@@ -481,6 +481,10 @@
 	$effect(() => {
 		const picked = equipItems.find((e) => e.item.name === pendingItemPick);
 		if (!picked) return;
+		// Consume the pick immediately -- otherwise this effect (which also depends on
+		// `activeSetup`) re-fires on every subsequent setup-tab switch and re-applies the same
+		// stale pick to whichever setup just became active.
+		pendingItemPick = '';
 
 		if (picked.kind === 'ammo') {
 			activeSetup.ammoName = picked.item.name;
