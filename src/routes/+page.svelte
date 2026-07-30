@@ -2062,6 +2062,12 @@
 				</p>
 			{/if}
 		</div>
+
+		<div class="hud-window scroll-hint">
+			<p>
+				<span aria-hidden="true">&darr;</span> Scroll down to build out your rotation on the timeline.
+			</p>
+		</div>
 	</div>
 </div>
 
@@ -2276,6 +2282,17 @@
 			0 0 0 1px #0a0704 inset,
 			0 4px 12px rgba(0, 0, 0, 0.5);
 		overflow: hidden;
+	}
+
+	.scroll-hint {
+		padding: 0.9rem 1rem;
+		text-align: center;
+	}
+
+	.scroll-hint p {
+		margin: 0;
+		color: #cbb98e;
+		font-size: 0.9rem;
 	}
 
 	/* .hud-column's own `gap` (meant for spacing between unrelated panels) would otherwise shove

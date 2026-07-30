@@ -25,6 +25,7 @@
 		slidingWindowDpm,
 		TICK_SECONDS,
 		type Ability,
+		type AbilityType,
 		type CombatStyle,
 		type GearContext,
 		type TimelinePlacement
@@ -123,6 +124,45 @@
 		}
 		return list;
 	});
+
+	// Fixed display order for ability tiers, independent of data insertion order.
+	const ABILITY_TYPE_ORDER: AbilityType[] = [
+		'Basic',
+		'Enhanced',
+		'Ultimate',
+		'Special',
+		'Threshold',
+		'Utility'
+	];
+	const ABILITY_TYPE_LABEL: Record<AbilityType, string> = {
+		Basic: 'Basic',
+		Enhanced: 'Enhanced',
+		Ultimate: 'Ultimate',
+		Special: 'Special Attack',
+		Threshold: 'Threshold',
+		Utility: 'Utility'
+	};
+
+	const abilitiesByType = $derived.by(() => {
+		const groups = new Map<AbilityType, Ability[]>();
+		for (const ability of filteredAbilities) {
+			const group = groups.get(ability.type);
+			if (group) group.push(ability);
+			else groups.set(ability.type, [ability]);
+		}
+		return ABILITY_TYPE_ORDER.map((type) => ({ type, abilities: groups.get(type) ?? [] })).filter(
+			(group) => group.abilities.length > 0
+		);
+	});
+
+	let collapsedTypes: Set<AbilityType> = $state(new Set());
+
+	function toggleTypeCollapsed(type: AbilityType) {
+		const next = new Set(collapsedTypes);
+		if (next.has(type)) next.delete(type);
+		else next.add(type);
+		collapsedTypes = next;
+	}
 
 	function abilityByName(name: string): Ability | undefined {
 		return abilities.find((a) => a.name === name);
@@ -672,34 +712,54 @@
 				Filter to equipped style
 			</label>
 		</div>
-		<div class="palette-grid">
-			{#each filteredAbilities as ability (ability.name)}
-				<button
-					type="button"
-					class="palette-icon"
-					class:off-gcd={isOffGcdAbility(ability)}
-					title="{ability.name}{isOffGcdAbility(ability) ? ' (off-GCD)' : ''}"
-					draggable="true"
-					ondragstart={(e) => onPaletteDragStart(e, ability)}
-					ondragend={onDragEnd}
-					onclick={() => placeAbility(ability)}
-				>
-					<img src={ability.iconPath} alt={ability.name} width="28" height="28" />
-					{#if weaponChipIconPath(ability)}
-						<img
-							class="weapon-chip"
-							src={weaponChipIconPath(ability)}
-							alt=""
-							width="14"
-							height="14"
-						/>
-					{/if}
-				</button>
-			{/each}
-			{#if filteredAbilities.length === 0}
+		{#if filteredAbilities.length === 0}
+			<div class="palette-grid">
 				<p class="palette-empty">No abilities match.</p>
-			{/if}
-		</div>
+			</div>
+		{:else}
+			{#each abilitiesByType as group (group.type)}
+				{@const collapsed = collapsedTypes.has(group.type)}
+				<div class="palette-group">
+					<button
+						type="button"
+						class="palette-group-heading"
+						aria-expanded={!collapsed}
+						onclick={() => toggleTypeCollapsed(group.type)}
+					>
+						<span class="palette-group-caret" class:collapsed>&#9662;</span>
+						{ABILITY_TYPE_LABEL[group.type]}
+						<span class="palette-group-count">({group.abilities.length})</span>
+					</button>
+					{#if !collapsed}
+						<div class="palette-grid">
+							{#each group.abilities as ability (ability.name)}
+								<button
+									type="button"
+									class="palette-icon"
+									class:off-gcd={isOffGcdAbility(ability)}
+									title="{ability.name}{isOffGcdAbility(ability) ? ' (off-GCD)' : ''}"
+									draggable="true"
+									ondragstart={(e) => onPaletteDragStart(e, ability)}
+									ondragend={onDragEnd}
+									onclick={() => placeAbility(ability)}
+								>
+									<img src={ability.iconPath} alt={ability.name} width="28" height="28" />
+									{#if weaponChipIconPath(ability)}
+										<img
+											class="weapon-chip"
+											src={weaponChipIconPath(ability)}
+											alt=""
+											width="14"
+											height="14"
+										/>
+									{/if}
+								</button>
+							{/each}
+						</div>
+					{/if}
+				</div>
+			{/each}
+		{/if}
 	</div>
 
 	<div class="timeline-toolbar">
@@ -804,7 +864,8 @@
 							style:grid-column="{channel.startTick + 1} / span {channel.barEndTick -
 								channel.startTick}"
 							style:border-color={colorForAbility(channel.abilityName)}
-							title="{channel.abilityName} (ticks {channel.startTick}-{channel.barEndTick - 1}){channel.isBleed
+							title="{channel.abilityName} (ticks {channel.startTick}-{channel.barEndTick -
+								1}){channel.isBleed
 								? ' -- converted to damage over time by Greater Barge, cannot be interrupted'
 								: ''}"
 						>
@@ -1090,6 +1151,48 @@
 		gap: 0.4rem;
 		font-size: 0.85rem;
 		color: #cbb98e;
+	}
+
+	.palette-group {
+		margin-bottom: 0.6rem;
+	}
+
+	.palette-group-heading {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		width: 100%;
+		margin: 0 0 0.3rem;
+		padding: 0;
+		background: none;
+		border: none;
+		font: inherit;
+		font-size: 0.75rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: #cbb98e;
+		cursor: pointer;
+	}
+
+	.palette-group-heading:hover {
+		color: #f4d78c;
+	}
+
+	.palette-group-caret {
+		display: inline-block;
+		font-size: 0.7rem;
+		transition: transform 0.15s ease;
+	}
+
+	.palette-group-caret.collapsed {
+		transform: rotate(-90deg);
+	}
+
+	.palette-group-count {
+		font-weight: 400;
+		text-transform: none;
+		letter-spacing: normal;
+		opacity: 0.7;
 	}
 
 	.palette-grid {
