@@ -609,10 +609,18 @@
 			activeSetupIndex,
 			selectedBossName
 		};
-		const encoded = await encodeShareState(state);
+		const payload = await encodeShareState(state);
+		const response = await fetch('/api/share', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ payload })
+		});
+		if (!response.ok) throw new Error('Failed to create share link');
+		const { code } = (await response.json()) as { code: string };
+
 		const url = new URL(window.location.href);
 		url.search = '';
-		url.searchParams.set(SHARE_QUERY_PARAM, encoded);
+		url.searchParams.set(SHARE_QUERY_PARAM, code);
 		return url.toString();
 	}
 
@@ -692,15 +700,18 @@
 	onMount(() => {
 		(async () => {
 			const url = new URL(window.location.href);
-			const shared = url.searchParams.get(SHARE_QUERY_PARAM);
-			if (shared) {
+			const shareCode = url.searchParams.get(SHARE_QUERY_PARAM);
+			if (shareCode) {
 				try {
-					const state = await decodeShareState<Partial<ShareableState>>(shared);
+					const response = await fetch(`/api/share/${encodeURIComponent(shareCode)}`);
+					if (!response.ok) throw new Error('Share link not found');
+					const { payload } = (await response.json()) as { payload: string };
+					const state = await decodeShareState<Partial<ShareableState>>(payload);
 					applyShareableState(state);
 					hasRestored = true;
 					return;
 				} catch {
-					// Corrupt or unparseable share link -- fall through to local persistence instead.
+					// Missing/expired/unparseable share link -- fall through to local persistence instead.
 				}
 			}
 
