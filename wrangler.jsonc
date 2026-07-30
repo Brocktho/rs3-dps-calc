@@ -6,5 +6,12 @@
 	"assets": {
 		"binding": "ASSETS",
 		"directory": ".svelte-kit/cloudflare"
-	}
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "rs3-dps-calc",
+			"database_id": "REPLACE_WITH_DATABASE_ID"
+		}
+	]
 }

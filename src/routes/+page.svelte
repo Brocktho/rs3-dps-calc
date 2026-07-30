@@ -638,6 +638,41 @@
 		}
 	}
 
+	let feedbackOpen = $state(false);
+	let feedbackText = $state('');
+	let feedbackStatus: 'idle' | 'submitting' | 'sent' | 'error' = $state('idle');
+
+	function openFeedback() {
+		feedbackText = '';
+		feedbackStatus = 'idle';
+		feedbackOpen = true;
+	}
+
+	function closeFeedback() {
+		feedbackOpen = false;
+	}
+
+	async function submitFeedback() {
+		const message = feedbackText.trim();
+		if (!message) return;
+
+		feedbackStatus = 'submitting';
+		try {
+			const response = await fetch('/api/feedback', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ message })
+			});
+			if (!response.ok) throw new Error('Request failed');
+			feedbackStatus = 'sent';
+			setTimeout(() => {
+				feedbackOpen = false;
+			}, 1200);
+		} catch {
+			feedbackStatus = 'error';
+		}
+	}
+
 	onMount(() => {
 		(async () => {
 			const url = new URL(window.location.href);
@@ -1163,16 +1198,70 @@
 			>.
 		</p>
 	</div>
-	<button type="button" class="share-button" onclick={shareLoadout} disabled={shareStatus === 'copying'}>
-		{#if shareStatus === 'copied'}
-			Link copied!
-		{:else if shareStatus === 'error'}
-			Copy failed
-		{:else}
-			Share loadout
-		{/if}
-	</button>
+	<div class="hud-title-actions">
+		<button type="button" class="share-button" onclick={openFeedback}>Submit feedback</button>
+		<button
+			type="button"
+			class="share-button"
+			onclick={shareLoadout}
+			disabled={shareStatus === 'copying'}
+		>
+			{#if shareStatus === 'copied'}
+				Link copied!
+			{:else if shareStatus === 'error'}
+				Copy failed
+			{:else}
+				Share loadout
+			{/if}
+		</button>
+	</div>
 </header>
+
+{#if feedbackOpen}
+	<div
+		class="feedback-overlay"
+		role="button"
+		tabindex="0"
+		onclick={closeFeedback}
+		onkeydown={(e) => e.key === 'Escape' && closeFeedback()}
+	>
+		<div
+			class="feedback-modal"
+			role="dialog"
+			aria-modal="true"
+			aria-label="Submit feedback"
+			tabindex="-1"
+			onclick={(e) => e.stopPropagation()}
+			onkeydown={(e) => e.stopPropagation()}
+		>
+			<h2>Submit feedback</h2>
+			<textarea
+				bind:value={feedbackText}
+				placeholder="Found a bug or have a suggestion? Let me know."
+				maxlength="2000"
+				rows="6"
+			></textarea>
+			<div class="feedback-modal-actions">
+				<span class="feedback-status">
+					{#if feedbackStatus === 'sent'}
+						Thanks!
+					{:else if feedbackStatus === 'error'}
+						Something went wrong -- try again.
+					{/if}
+				</span>
+				<button type="button" class="feedback-cancel" onclick={closeFeedback}>Cancel</button>
+				<button
+					type="button"
+					class="share-button"
+					onclick={submitFeedback}
+					disabled={feedbackStatus === 'submitting' || feedbackText.trim().length === 0}
+				>
+					{feedbackStatus === 'submitting' ? 'Sending...' : 'Send'}
+				</button>
+			</div>
+		</div>
+	</div>
+{/if}
 
 <div class="hud-columns">
 	<div class="hud-column">
@@ -2029,6 +2118,12 @@
 		gap: 1rem;
 	}
 
+	.hud-title-actions {
+		flex-shrink: 0;
+		display: flex;
+		gap: 0.75rem;
+	}
+
 	.share-button {
 		flex-shrink: 0;
 		padding: 0.5rem 1rem;
@@ -2051,6 +2146,70 @@
 	.share-button:disabled {
 		cursor: default;
 		opacity: 0.7;
+	}
+
+	.feedback-overlay {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.6);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		z-index: 100;
+	}
+
+	.feedback-modal {
+		background: #1c160c;
+		border: 2px solid #5a4a2c;
+		border-radius: 8px;
+		padding: 1.5rem;
+		width: 100%;
+		max-width: 28rem;
+		color: #e8dcc0;
+	}
+
+	.feedback-modal h2 {
+		margin: 0 0 1rem;
+		font-size: 1.1rem;
+	}
+
+	.feedback-modal textarea {
+		width: 100%;
+		box-sizing: border-box;
+		resize: vertical;
+		background: #241d12;
+		border: 1px solid #5a4a2c;
+		border-radius: 6px;
+		color: #e8dcc0;
+		font: inherit;
+		padding: 0.6rem;
+	}
+
+	.feedback-modal-actions {
+		margin-top: 1rem;
+		display: flex;
+		align-items: center;
+		justify-content: flex-end;
+		gap: 0.75rem;
+	}
+
+	.feedback-status {
+		margin-right: auto;
+		font-size: 0.8rem;
+		opacity: 0.8;
+	}
+
+	.feedback-cancel {
+		background: none;
+		border: none;
+		color: #e8dcc0;
+		opacity: 0.7;
+		cursor: pointer;
+		font: inherit;
+	}
+
+	.feedback-cancel:hover {
+		opacity: 1;
 	}
 
 	.hud-title h1 {
