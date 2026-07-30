@@ -73,7 +73,7 @@
 		{ id: 'ring', label: 'Ring', area: 'ring' }
 	];
 
-	const WEAPON_POISON_OPTIONS = ['N/A', 'base', '+', '++', '+++'] as const;
+	// const WEAPON_POISON_OPTIONS = ['N/A', 'base', '+', '++', '+++'] as const; // unused while the Weapon Poison config section is disabled
 
 	// A single combobox lets the user look up any equippable item -- weapon, ammo, or armour
 	// -- by name. Each entry knows which gear slot it belongs in and carries the underlying
@@ -174,10 +174,10 @@
 		prayerMode: 'prayers' | 'curses';
 		selectedPrayerNames: { accuracy: string | null; damage: string | null; armour: string | null };
 		selectedSpellName: string;
-		hasStatiusWarhammer: boolean;
-		hasVulnBomb: boolean;
-		hasSmokeCloud: boolean;
-		weaponPoison: (typeof WEAPON_POISON_OPTIONS)[number];
+		// hasStatiusWarhammer: boolean; // not yet implemented in the damage/formula engine
+		// hasVulnBomb: boolean; // not yet implemented in the damage/formula engine
+		// hasSmokeCloud: boolean; // not yet implemented in the damage/formula engine
+		// weaponPoison: (typeof WEAPON_POISON_OPTIONS)[number]; // not yet implemented in the damage/formula engine
 		startingAdrenaline: number;
 		hasRingOfVigour: boolean;
 		hasFuryOfTheSmall: boolean;
@@ -212,10 +212,10 @@
 			prayerMode: 'prayers',
 			selectedPrayerNames: { accuracy: null, damage: null, armour: null },
 			selectedSpellName: '',
-			hasStatiusWarhammer: false,
-			hasVulnBomb: false,
-			hasSmokeCloud: false,
-			weaponPoison: 'N/A',
+			// hasStatiusWarhammer: false,
+			// hasVulnBomb: false,
+			// hasSmokeCloud: false,
+			// weaponPoison: 'N/A',
 			startingAdrenaline: 0,
 			hasRingOfVigour: false,
 			hasFuryOfTheSmall: false,
@@ -1942,6 +1942,7 @@
 							</label>
 						</section>
 
+						<!-- Effects and Weapon Poison sections removed until wired into the damage engine:
 						<section class="config-section">
 							<h3>Effects</h3>
 							<label class="config-checkbox">
@@ -1969,6 +1970,7 @@
 								</select>
 							</label>
 						</section>
+						-->
 
 						<section class="config-section">
 							<h3>Global Unlocks</h3>
@@ -2529,6 +2531,7 @@
 		text-align: center;
 	}
 
+	/* .config-field select rules unused while the Weapon Poison config section is disabled:
 	.config-field select {
 		font-size: 1rem;
 		padding: 0.4rem 0.5rem;
@@ -2538,16 +2541,18 @@
 		color: #e8dcc4;
 	}
 
-	/* color-scheme: dark (set globally) handles most browsers' native dropdown popup
-	   chrome, but some UAs still need option-level colors set directly to avoid
-	   low-contrast black-on-dark text in the open list. */
 	.config-field select option {
 		background-color: #100c08;
 		color: #e8dcc4;
 	}
 
-	.stat-row-input:focus,
 	.config-field select:focus {
+		outline: 2px solid #f4d78c;
+		outline-offset: 1px;
+	}
+	*/
+
+	.stat-row-input:focus {
 		outline: 2px solid #f4d78c;
 		outline-offset: 1px;
 	}
