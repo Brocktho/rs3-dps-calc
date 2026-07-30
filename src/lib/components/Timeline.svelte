@@ -168,13 +168,30 @@
 		return abilities.find((a) => a.name === name);
 	}
 
-	function weaponChipIconPath(ability: Ability): string | null {
+	function weaponIconPath(ability: Ability): string | null {
 		if (!ability.weapons || ability.weapons.length === 0) return null;
 		const slug = ability.weapons[0]
 			.toLowerCase()
 			.replace(/[^a-z0-9]+/g, '-')
 			.replace(/^-+|-+$/g, '');
 		return `/weapon-icons/${slug}.png`;
+	}
+
+	// Special attacks share one generic ability icon (their real identity is the weapon), so the
+	// usual "ability icon big, weapon icon as a small corner chip" convention is backwards for
+	// them -- flip it: the weapon fills the square, the generic special-attack icon is the chip.
+	function mainIconPath(ability: Ability): string {
+		if (ability.type === 'Special') {
+			return weaponIconPath(ability) ?? ability.iconPath;
+		}
+		return ability.iconPath;
+	}
+
+	function chipIconPath(ability: Ability): string | null {
+		if (ability.type === 'Special') {
+			return weaponIconPath(ability) ? ability.iconPath : null;
+		}
+		return weaponIconPath(ability);
 	}
 
 	function placeAbility(ability: Ability) {
@@ -743,11 +760,11 @@
 									ondragend={onDragEnd}
 									onclick={() => placeAbility(ability)}
 								>
-									<img src={ability.iconPath} alt={ability.name} width="28" height="28" />
-									{#if weaponChipIconPath(ability)}
+									<img src={mainIconPath(ability)} alt={ability.name} width="28" height="28" />
+									{#if chipIconPath(ability)}
 										<img
 											class="weapon-chip"
-											src={weaponChipIconPath(ability)}
+											src={chipIconPath(ability)}
 											alt=""
 											width="14"
 											height="14"
@@ -906,11 +923,11 @@
 								ondragend={onDragEnd}
 								onclick={() => removePlacement(cell.placement!.id)}
 							>
-								<img src={ability.iconPath} alt={ability.name} width="24" height="24" />
-								{#if weaponChipIconPath(ability)}
+								<img src={mainIconPath(ability)} alt={ability.name} width="24" height="24" />
+								{#if chipIconPath(ability)}
 									<img
 										class="weapon-chip"
-										src={weaponChipIconPath(ability)}
+										src={chipIconPath(ability)}
 										alt=""
 										width="12"
 										height="12"
@@ -999,11 +1016,11 @@
 									ondragend={onDragEnd}
 									onclick={() => removePlacement(placement.id)}
 								>
-									<img src={ability.iconPath} alt={ability.name} width="18" height="18" />
-									{#if weaponChipIconPath(ability)}
+									<img src={mainIconPath(ability)} alt={ability.name} width="18" height="18" />
+									{#if chipIconPath(ability)}
 										<img
 											class="weapon-chip off-gcd-chip"
-											src={weaponChipIconPath(ability)}
+											src={chipIconPath(ability)}
 											alt=""
 											width="10"
 											height="10"
