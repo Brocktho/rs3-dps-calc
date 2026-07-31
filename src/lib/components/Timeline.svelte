@@ -754,7 +754,9 @@
 									type="button"
 									class="palette-icon"
 									class:off-gcd={isOffGcdAbility(ability)}
-									title="{ability.name}{isOffGcdAbility(ability) ? ' (off-GCD)' : ''}"
+									title="{ability.name}{isOffGcdAbility(ability) ? ' (off-GCD)' : ''}{!ability.verified
+										? ' -- not fully implemented: behavior inferred from description text, not yet manually verified'
+										: ''}"
 									draggable="true"
 									ondragstart={(e) => onPaletteDragStart(e, ability)}
 									ondragend={onDragEnd}
@@ -769,6 +771,9 @@
 											width="14"
 											height="14"
 										/>
+									{/if}
+									{#if !ability.verified}
+										<span class="unverified-badge" aria-hidden="true">!</span>
 									{/if}
 								</button>
 							{/each}
@@ -1251,6 +1256,22 @@
 
 	.palette-icon.off-gcd {
 		border-color: #4a7a5c;
+	}
+
+	.unverified-badge {
+		position: absolute;
+		top: -0.3rem;
+		right: -0.3rem;
+		width: 0.9rem;
+		height: 0.9rem;
+		border-radius: 50%;
+		border: 1px solid #14100c;
+		background: #d9a343;
+		color: #14100c;
+		font-size: 0.65rem;
+		font-weight: 700;
+		line-height: 0.9rem;
+		text-align: center;
 	}
 
 	.timeline-toolbar {

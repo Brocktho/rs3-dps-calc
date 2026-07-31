@@ -57,6 +57,45 @@ export interface Ability {
 	 *  attack, e.g. ["Dragon dagger", "Superior dragon dagger"] both trigger "Draconic
 	 *  Puncture". null for all other abilities. */
 	weapons: string[] | null;
+
+	// --- Typed mechanic fields (optional migration target) ---
+	// These mirror what timeline.ts's parseX functions currently derive from `description` via
+	// regex. Each one is optional and, while unset, every ability falls back to the legacy
+	// regex parse -- so this is a zero-risk, incremental migration surface: set a field here
+	// once an ability's mechanic has been hand-verified against the wiki, and the corresponding
+	// parseX function in timeline.ts will prefer it over re-deriving from text. See `verified`
+	// below for the actual completeness signal shown to the user; these fields are what gets
+	// checked off as part of reaching that state, not a signal by themselves.
+
+	/** True if usable during the GCD, false if not. Mirrors isOffGcdAbility's regex. Leave
+	 *  unset to fall back to parsing `description`. */
+	offGcd?: boolean;
+	/** Mirrors parseHitProfile's regex-derived HitProfile (see timeline.ts). Leave unset to
+	 *  fall back to parsing `description`. */
+	hitProfile?: { kind: 'single' } | { kind: 'channel'; hits: number; intervalTicks: number; isBleed: boolean };
+	/** Mirrors parseBuffInfo's regex-derived duration. null means "confirmed this ability is
+	 *  NOT a self-buff" (a real, verified negative) -- distinct from leaving the field unset,
+	 *  which means "unverified, fall back to parsing `description`". */
+	buffProfile?: { durationTicks: number } | null;
+	/** Mirrors parseBuffExtension's regex-derived buff-extension clause. null means "confirmed
+	 *  this ability does NOT extend any buff". Unset falls back to parsing `description`. */
+	buffExtension?: { buffDisplayName: string; extendTicks: number } | null;
+	/** For a 'single'-profile ability whose hits land on more than just its own placement tick
+	 *  (e.g. Ricochet: 3 hits total, but only the first lands immediately -- the other two land
+	 *  1 tick later), the tick OFFSET from the placement's startTick for each hit, one entry per
+	 *  hit -- e.g. Ricochet is `[0, 1, 1]`. Has no effect on a 'channel'-profile ability, which
+	 *  already has its own timing via `hitProfile.intervalTicks`. Unset means "every hit lands on
+	 *  the placement's own startTick, offset 0" -- the same behavior every ability had before this
+	 *  field existed, so leaving it unset is a safe, unverified default, not a fallback to regex
+	 *  parsing (there's no description wording for this timing to parse in the first place). */
+	damagesOnTick?: number[];
+
+	/** Manual attestation that every mechanic this ability actually has has been hand-checked
+	 *  against the wiki and (where relevant) backed by the typed fields above, rather than left
+	 *  to the description-regex fallback. Defaults to unset/false for all scraped entries --
+	 *  this is never inferred, only set by a human confirming the ability's behavior. Drives the
+	 *  "not fully implemented" warning chip in Timeline.svelte. */
+	verified?: boolean;
 }
 
 /**
@@ -95,7 +134,12 @@ export const abilities: Ability[] = [
 			'Dive forward. Move up to 10 tiles towards tile. Can be cast during the global cooldown. Must be manually triggered during revolution combat.',
 		membersOnly: false,
 		iconPath: '/ability-icons/dive.png',
-		weapons: null
+		weapons: null,
+		offGcd: true,
+		hitProfile: { kind: 'single' },
+		buffProfile: null,
+		buffExtension: null,
+		verified: true
 	},
 	{
 		name: 'Adrenaline potion',
@@ -113,7 +157,12 @@ export const abilities: Ability[] = [
 		description: 'Drink an adrenaline potion. Instantly grants 25% Adrenaline. Can be cast during the global cooldown.',
 		membersOnly: false,
 		iconPath: '/ability-icons/adrenaline-potion.png',
-		weapons: null
+		weapons: null,
+		offGcd: true,
+		hitProfile: { kind: 'single' },
+		buffProfile: null,
+		buffExtension: null,
+		verified: true
 	},
 	{
 		name: 'Super adrenaline potion',
@@ -131,7 +180,12 @@ export const abilities: Ability[] = [
 		description: 'Drink a super adrenaline potion. Instantly grants 30% Adrenaline. Can be cast during the global cooldown.',
 		membersOnly: true,
 		iconPath: '/ability-icons/super-adrenaline-potion.png',
-		weapons: null
+		weapons: null,
+		offGcd: true,
+		hitProfile: { kind: 'single' },
+		buffProfile: null,
+		buffExtension: null,
+		verified: true
 	},
 	{
 		name: 'Adrenaline renewal potion',
@@ -149,7 +203,12 @@ export const abilities: Ability[] = [
 		description: 'Drink an adrenaline renewal potion. Grants 4% Adrenaline every 0.6s (1 tick). 6s (10 ticks) duration. Can be cast during the global cooldown.',
 		membersOnly: true,
 		iconPath: '/ability-icons/adrenaline-renewal-potion.png',
-		weapons: null
+		weapons: null,
+		offGcd: true,
+		hitProfile: { kind: 'single' },
+		buffProfile: { durationTicks: 10 },
+		buffExtension: null,
+		verified: true
 	},
 	{
 		name: 'Attack',
@@ -282,7 +341,12 @@ export const abilities: Ability[] = [
 			'Strike at the target with unmatched fury. 120%-140% Melee damage. Your next Melee attack within 15s (25 ticks) is guaranteed to Critically Strike. Generates 1 Bloodlust stack. Generates 9% Adrenaline.',
 		membersOnly: true,
 		iconPath: '/ability-icons/greater-fury.png',
-		weapons: null
+		weapons: null,
+		offGcd: false,
+		hitProfile: { kind: 'single' },
+		buffProfile: null,
+		buffExtension: null,
+		verified: true
 	},
 	{
 		name: 'Backhand',
@@ -377,7 +441,12 @@ export const abilities: Ability[] = [
 			'Slice at the target causing them to Bleed. 25%-35% Melee damage per hit every 1.2s (2 ticks). 8 hits. Damage over time. Heals you for 4% of the damage dealt. Can be recast within 24s (40 ticks) of the previous cast. Second Cast: Stab the target, causing them to Bleed. Third Cast: Swing at the target causing them to Bleed.',
 		membersOnly: false,
 		iconPath: '/ability-icons/dismember.png',
-		weapons: null
+		weapons: null,
+		offGcd: false,
+		hitProfile: { kind: 'channel', hits: 8, intervalTicks: 2, isBleed: true },
+		buffProfile: null,
+		buffExtension: null,
+		verified: true
 	},
 	{
 		name: 'Punish',
@@ -415,7 +484,12 @@ export const abilities: Ability[] = [
 			'Stab the target, causing them to Bleed. 80%-100% Melee damage per hit every 1.8s (3 ticks). 6 hits. Damage over time. Heals for 6% of damage dealt. Third Cast: Swing at the target causing them to Bleed.',
 		membersOnly: false,
 		iconPath: '/ability-icons/slaughter.png',
-		weapons: null
+		weapons: null,
+		offGcd: false,
+		hitProfile: { kind: 'channel', hits: 6, intervalTicks: 3, isBleed: true },
+		buffProfile: null,
+		buffExtension: null,
+		verified: true
 	},
 	{
 		name: 'Barge',
@@ -453,7 +527,12 @@ export const abilities: Ability[] = [
 			'Dash forward striking the enemies around you. Move up to 10 tiles towards enemy or tile. 75%-95% Melee damage to the target and up to 8 additional enemies within 1 tile of you. Enemies hit will reset the cooldown of Bladed Dive if they die within 6s (10 ticks). Generates 9% Adrenaline. Can be cast during the global cooldown but will not generate adrenaline or deal damage. Must be manually triggered during revolution combat.',
 		membersOnly: true,
 		iconPath: '/ability-icons/bladed-dive.png',
-		weapons: null
+		weapons: null,
+		offGcd: true,
+		hitProfile: { kind: 'single' },
+		buffProfile: null,
+		buffExtension: null,
+		verified: true
 	},
 	{
 		name: 'Greater Barge',
@@ -472,7 +551,12 @@ export const abilities: Ability[] = [
 			'Run up and ram the target. Move up to 10 tiles towards the target. 75%-95% Melee damage. Clears Bound debuff. Binds the target for 6.6s (11 ticks). Deals an additional 5%-7% Melee damage for every 0.6s (1 tick) since your last attack. After 4.8s (8 ticks) since your last attack, your next Channelled ability cast within 6s (10 ticks) is dealt as Damage over time. Generates 1 Bloodlust stack. Generates 9% Adrenaline. Maximum additional damage duration: 6s (10 ticks).',
 		membersOnly: true,
 		iconPath: '/ability-icons/greater-barge.png',
-		weapons: null
+		weapons: null,
+		offGcd: false,
+		hitProfile: { kind: 'single' },
+		buffProfile: null,
+		buffExtension: null,
+		verified: true
 	},
 	{
 		name: 'Pulverise',
@@ -510,7 +594,12 @@ export const abilities: Ability[] = [
 			'Swing at the target causing them to Bleed. 110%-130% Melee damage on first hit. 100% Melee damage per hit every 2.4s (4 ticks). 7 hits. Damage over time. Heals for 12% of damage dealt.',
 		membersOnly: false,
 		iconPath: '/ability-icons/massacre.png',
-		weapons: null
+		weapons: null,
+		offGcd: false,
+		hitProfile: { kind: 'channel', hits: 7, intervalTicks: 4, isBleed: true },
+		buffProfile: null,
+		buffExtension: null,
+		verified: true
 	},
 	{
 		name: 'Berserk',
@@ -529,7 +618,12 @@ export const abilities: Ability[] = [
 			'Go berserk, empowering yourself. Melee attacks deal 1.75x damage. Increases damage taken by 25%. Generates 4 Bloodlust stacks. Basic attacks and basic abilities generate 2x Bloodlust stack. Maximum number of Bloodlust stacks are increased by 4. Overpower: Cooldown reduced to 9s (15 ticks). 19.8s (33 ticks) duration.',
 		membersOnly: true,
 		iconPath: '/ability-icons/berserk.png',
-		weapons: null
+		weapons: null,
+		offGcd: false,
+		hitProfile: { kind: 'single' },
+		buffProfile: { durationTicks: 33 },
+		buffExtension: null,
+		verified: true
 	},
 	{
 		name: 'Meteor Strike',
@@ -567,7 +661,12 @@ export const abilities: Ability[] = [
 			'Release a savage war cry, empowering your next strike. 100%-120% Melee damage. Your next melee ability within 7.2s (12 ticks) deals 1.75x (PvP: 1.25x) base damage. Generates 1 Bloodlust stack. Generates 9% Adrenaline.',
 		membersOnly: true,
 		iconPath: '/ability-icons/chaos-roar.png',
-		weapons: null
+		weapons: null,
+		offGcd: false,
+		hitProfile: { kind: 'single' },
+		buffProfile: null,
+		buffExtension: null,
+		verified: true
 	},
 	{
 		name: 'Escape',
@@ -833,7 +932,13 @@ export const abilities: Ability[] = [
 			'Fire a shot which ricochets off the target. 75-85% Ranged damage to the target and up to 2 additional enemies within 5 tiles of the target. The target will be hit for an additional 15%-20% Ranged damage for each enemy that cannot be found. Generates 9% Adrenaline (With Caroming perk) Invention perk: Caroming (rank [number]).',
 		membersOnly: false,
 		iconPath: '/ability-icons/ricochet.png',
-		weapons: null
+		weapons: null,
+		offGcd: false,
+		hitProfile: { kind: 'single' },
+		buffProfile: null,
+		buffExtension: null,
+		damagesOnTick: [0, 1, 1],
+		verified: true
 	},
 	{
 		name: 'Corruption Shot',
@@ -928,7 +1033,12 @@ export const abilities: Ability[] = [
 			'Imbue your weapon with dark whispers. Applies Shadow Imbued to self. 30s (50 ticks) duration. Shadow Imbued Ranged attacks against your target generate 5% Adrenaline with each hit.',
 		membersOnly: false,
 		iconPath: '/ability-icons/imbue-shadows.png',
-		weapons: null
+		weapons: null,
+		offGcd: false,
+		hitProfile: { kind: 'single' },
+		buffProfile: { durationTicks: 50 },
+		buffExtension: null,
+		verified: true
 	},
 	{
 		name: 'Surge',
@@ -947,7 +1057,12 @@ export const abilities: Ability[] = [
 			'Teleport forward. Move forwards 10 tiles. (After reading a Double Surge codex) Maximum charges: 2. Can be cast during the global cooldown. Must be manually triggered during revolution combat.',
 		membersOnly: false,
 		iconPath: '/ability-icons/surge.png',
-		weapons: null
+		weapons: null,
+		offGcd: true,
+		hitProfile: { kind: 'single' },
+		buffProfile: null,
+		buffExtension: null,
+		verified: true
 	},
 	{
 		name: 'Magic',

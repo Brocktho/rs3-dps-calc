@@ -31,6 +31,7 @@ export interface GearContext {
  * rather than hand-annotating every entry.
  */
 export function isOffGcdAbility(ability: Ability): boolean {
+	if (ability.offGcd !== undefined) return ability.offGcd;
 	return /can be (cast|used) during the global cooldown/i.test(ability.description);
 }
 
@@ -177,6 +178,8 @@ export type HitProfile =
  * Everything else (including a bare "N hits." with no timing, e.g. Adaptive Strike) is 'single'.
  */
 export function parseHitProfile(ability: Ability): HitProfile {
+	if (ability.hitProfile !== undefined) return ability.hitProfile;
+
 	const isBleed = BLEED_ABILITY_NAMES.has(ability.name);
 
 	const windowMatch = ability.description.match(
@@ -214,6 +217,8 @@ export interface BuffInfo {
  * self-extend on repeat casts/hits (e.g. Devotion) aren't modeled -- just the base duration.
  */
 export function parseBuffInfo(ability: Ability): BuffInfo | null {
+	if (ability.buffProfile !== undefined) return ability.buffProfile;
+
 	const match = ability.description.match(/[\d.]+s \((\d+) ticks?\) duration/i);
 	if (!match) return null;
 	return { durationTicks: Number(match[1]) };
@@ -433,6 +438,8 @@ function buffCastingAbilityName(buffDisplayName: string): string {
  * by the user for Rapid Fire/Galeshot, and the identical phrasing on Greater Flurry/Berserk).
  */
 export function parseBuffExtension(ability: Ability): BuffExtension | null {
+	if (ability.buffExtension !== undefined) return ability.buffExtension;
+
 	const match = ability.description.match(
 		/extends the duration of ([a-z ]+?) by [\d.]+s \((\d+) ticks?\)/i
 	);
@@ -1099,6 +1106,10 @@ export function requiredTimelineLength(
 		if (!ability) continue;
 		max = Math.max(max, p.startTick + abilityTickSpan(ability));
 
+		if (ability.damagesOnTick && ability.damagesOnTick.length > 0) {
+			max = Math.max(max, p.startTick + Math.max(...ability.damagesOnTick) + 1);
+		}
+
 		const buff = parseBuffInfo(ability);
 		if (buff) max = Math.max(max, p.startTick + buff.durationTicks);
 
@@ -1488,16 +1499,22 @@ export function damageByTick(
 				Math.floor(perHitDamage * CHAOS_ROAR_DAMAGE_MULTIPLIER),
 				MAX_DAMAGE_PER_HIT
 			);
-			const searingWindsBonus =
-				searingWindsBonusPerHit > 0 &&
-				searingWindsBuffs.some(
-					(b) => placement.startTick >= b.startTick && placement.startTick <= b.endTick
-				)
-					? searingWindsBonusPerHit
-					: 0;
+			// Per-hit tick offsets from the placement's own startTick, e.g. Ricochet's [0, 1, 1] --
+			// defaults to every hit landing on startTick (offset 0) when unset, same as before this
+			// field existed. Only applied up to `hitCount` entries; extra offsets beyond hitCount
+			// (e.g. a gear variant with fewer hits than damagesOnTick has entries for) are ignored.
+			const offsets = ability.damagesOnTick ?? [];
 			for (let i = 0; i < hitCount; i++) {
+				const offset = offsets[i] ?? 0;
+				const tick = placement.startTick + offset;
+				if (tick < 0 || tick >= timelineLength) continue;
+				const searingWindsBonus =
+					searingWindsBonusPerHit > 0 &&
+					searingWindsBuffs.some((b) => tick >= b.startTick && tick <= b.endTick)
+						? searingWindsBonusPerHit
+						: 0;
 				const boosted = hasChaosRoarBonus && i === 0;
-				result[placement.startTick] += (boosted ? boostedPerHitDamage : perHitDamage) + searingWindsBonus;
+				result[tick] += (boosted ? boostedPerHitDamage : perHitDamage) + searingWindsBonus;
 			}
 		}
 	}

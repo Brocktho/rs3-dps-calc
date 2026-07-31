@@ -2458,7 +2458,10 @@ describe("damageByTick splits a 'single'-profile multi-hit ability's damage per-
 			abilityDamageForPlacement(ricochet, 1_000_000, NEUTRAL_GEAR) / hitCountFor(ricochet, NEUTRAL_GEAR)
 		);
 		expect(perHitDamage).toBeGreaterThan(MAX_DAMAGE_PER_HIT);
-		expect(result[0]).toBe(MAX_DAMAGE_PER_HIT * hitCountFor(ricochet, NEUTRAL_GEAR));
+		// Ricochet's hits land at offsets [0, 1, 1] from its placement tick (per damagesOnTick):
+		// the initial hit on tick 0, and the two ricochet hits together on tick 1.
+		expect(result[0]).toBe(MAX_DAMAGE_PER_HIT);
+		expect(result[1]).toBe(MAX_DAMAGE_PER_HIT * 2);
 	});
 
 	it("a genuinely single-hit ability's damage is unaffected by the per-hit split (hitCount 1)", () => {
