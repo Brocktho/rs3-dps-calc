@@ -1,8 +1,20 @@
-import type { BuffEmission } from '../formulas/modifiers';
+import type { BuffEmission, ModifierContext } from '../formulas/modifiers';
+import type { GearContext } from '../formulas/timeline';
 
 export type AbilityStyle = 'melee' | 'ranged' | 'magic' | 'necromancy' | 'defence' | 'constitution';
 export type AbilityType = 'Basic' | 'Enhanced' | 'Threshold' | 'Ultimate' | 'Utility' | 'Special';
 export type AbilityTarget = 'Self' | 'Single' | 'Area' | 'Multi' | 'Varies';
+
+/** The enemy-side state a `damagePercent` function (e.g. Punish's "2.5x below 50% life") can read.
+ *  `hpPercent` is a single USER-ENTERED assumption (a manual "assumed enemy HP%" input the player
+ *  sets once for the whole rotation), not a live value tracked per-tick as damage lands -- this app
+ *  has no running "remaining enemy HP over time" model, and building one is out of scope for what
+ *  this field needs. Extend with more fields here only if a future ability's damage genuinely
+ *  depends on something else about the enemy (not gear, not the player -- see GearContext/
+ *  ModifierContext for those). */
+export interface Enemy {
+	hpPercent: number;
+}
 
 export interface Ability {
 	name: string;
@@ -24,8 +36,18 @@ export interface Ability {
 	 * computes), e.g. 250 for Overpower's 250%. A range like "90%-110%" is kept as the raw
 	 * string. null for abilities with no single damage value -- either non-damaging (target
 	 * is 'Self') or equipment-dependent (see damageVariants).
+	 *
+	 * A raw `number` is equivalent to a string of just that value (e.g. `120` === `'120%'`) --
+	 * both are accepted so new entries don't need to wrap a plain figure in a string. A function
+	 * is for damage that depends on enemy state rather than being fixed (e.g. Punish: 120%
+	 * normally, 300% -- its 2.5x multiplier already averaged in -- while the target is below 50%
+	 * life points) -- see `Enemy` and `resolveDamagePercent` in timeline.ts, which is what
+	 * actually calls it with the player's current "assumed enemy HP%" setting. The function itself
+	 * returns a plain string/number, not a range -- if the underlying wiki text is itself a range
+	 * per HP bracket, resolve it to the same single averaged value every other entry in this file
+	 * already uses (see Punish's own entry for the worked example).
 	 */
-	damagePercent: string | null;
+	damagePercent: string | number | ((enemy: Enemy) => string | number) | null;
 	/**
 	 * For abilities whose damage percentage depends on equipped gear (e.g. Adaptive Strike:
 	 * different % for dual wield vs two-handed vs main-hand-only; Overpower/Deadshot/
@@ -122,6 +144,36 @@ export interface Ability {
 	 *  for the overwhelming majority of abilities, which emit nothing beyond their own generic
 	 *  self-buff (already covered by `buffProfile`/`parseBuffInfo`) or nothing at all. */
 	emits?: BuffEmission[];
+
+	// --- Ability resolver (see docs/ability-resolver-design.md) ---
+	// Gradual replacement for damagePercent's function form, damageVariants, hitCountVariants,
+	// hitProfile, and damagesOnTick: instead of several parallel gear/enemy-keyed dictionaries that
+	// each answer a narrow question, one `resolve` function per ability returns everything about
+	// its damage/hit shape given the player's current gear, global unlocks, and assumed enemy
+	// state. `resolve` is optional and returns a PARTIAL result -- an ability only overrides the
+	// specific field(s) that actually vary; anything it doesn't return falls back to that
+	// ability's own static `hitOffsets`/`isBleed`/`damagePercent` fields, which in turn fall back
+	// to the legacy hitProfile/damagesOnTick/damageVariants/hitCountVariants/description-regex
+	// chain for any ability not yet migrated. See resolveDamagePercent/resolveHitOffsets/
+	// resolveIsBleed in timeline.ts for the exact fallback order. The old fields are NOT deleted
+	// until every ability in this file has been migrated off them.
+	resolve?: (input: {
+		ctx: ModifierContext;
+		gear: GearContext;
+		enemy: Enemy;
+	}) => Partial<{ damagePercent: string | number; hitOffsets: number[]; isBleed: boolean }>;
+	/** Pre-computed, static tick OFFSET (from a placement's own startTick) for every hit, one entry
+	 *  per hit -- e.g. a plain single hit is `[0]`, Ricochet is `[0, 1, 1]`, Slaughter (6 hits every
+	 *  3 ticks) is `[0, 3, 6, 9, 12, 15]`. Replaces `hitProfile` + `damagesOnTick` together for a
+	 *  migrated ability: hit COUNT is just `hitOffsets.length`, no separate field for it. Only for
+	 *  gear/enemy-INVARIANT timing -- an ability whose timing actually depends on context uses
+	 *  `resolve`'s `hitOffsets` output instead (which takes priority over this static field when
+	 *  present). Unset falls back to `hitProfile`/`damagesOnTick`/description-regex. */
+	hitOffsets?: number[];
+	/** Static replacement for BLEED_ABILITY_NAMES membership -- true for an unconditional bleed/DoT
+	 *  (Dismember, Slaughter, Massacre) whose remaining hits are NOT cut short by a later GCD
+	 *  placement (see resolveChannels). Unset falls back to BLEED_ABILITY_NAMES. */
+	isBleed?: boolean;
 }
 
 /**
@@ -285,7 +337,13 @@ export const abilities: Ability[] = [
 		type: 'Basic',
 		adrenaline: 12,
 		target: 'Single',
-		damagePercent: null,
+		// Migrated onto `resolve` (see docs/ability-resolver-design.md) -- damagePercent/
+		// hitOffsets below are the main-hand-only/two-handed static fallback (130%, 1 hit) for any
+		// reader that doesn't go through resolveDamagePercent/resolveHitOffsets. damageVariants/
+		// hitCountVariants/damagesOnTick are kept as the underlying legacy data (not yet deleted --
+		// see the design doc's "old fields stay live until nothing references them" policy) but are
+		// no longer what actually drives this ability's behavior.
+		damagePercent: '130%',
 		damageVariants: { 'Dual wield': '135%', 'Main hand, no offhand': '130%', 'Two-handed': '130%' },
 		hitCountVariants: { 'Dual wield': 2, 'Main hand, no offhand': 1, 'Two-handed': 1 },
 		cooldownText: '5.4 seconds (9 ticks)',
@@ -299,12 +357,14 @@ export const abilities: Ability[] = [
 		hitProfile: { kind: 'single' },
 		buffProfile: null,
 		buffExtension: null,
-		damagesOnTick: {
-			'Dual wield': [0, 0],
-			'Main hand, no offhand': [0],
-			'Two-handed': [0]
-		},
-		verified: true
+		hitOffsets: [0],
+		verified: true,
+		resolve: ({ gear }) => {
+			const dualWield = !gear.isTwoHanded && gear.hasOffHandWeapon;
+			return dualWield
+				? { damagePercent: 135, hitOffsets: [0, 0] }
+				: { damagePercent: 130, hitOffsets: [0] };
+		}
 	},
 	{
 		name: 'Overpower',
@@ -314,7 +374,9 @@ export const abilities: Ability[] = [
 		type: 'Ultimate',
 		adrenaline: -60,
 		target: 'Single',
-		damagePercent: null,
+		// Migrated onto `resolve` -- see docs/ability-resolver-design.md and Adaptive Strike's entry
+		// for the pattern. Static fields below are the no-cape fallback.
+		damagePercent: '545%',
 		damageVariants: { Any: '545%', 'Igneous Kal-Ket or Igneous Kal-Zuk': '620%' },
 		hitCountVariants: { Any: 1, 'Igneous Kal-Ket or Igneous Kal-Zuk': 2 },
 		cooldownText: '30 seconds (50 ticks)',
@@ -323,7 +385,15 @@ export const abilities: Ability[] = [
 			'Strike the target with a massive overhead swing. 520%-570% Melee damage (Igneous Kal-Ket or Igneous Kal-Zuk: 280%-340% Melee damage per hit, 2 hits). Damage is 55% effective in PvP.',
 		membersOnly: false,
 		iconPath: '/ability-icons/overpower.png',
-		weapons: null
+		weapons: null,
+		hitOffsets: [0],
+		resolve: ({ gear }) => {
+			const capes = ['igneous kal-ket', 'igneous kal-zuk'];
+			const hasCape = !!gear.equippedCapeName && capes.includes(gear.equippedCapeName.toLowerCase());
+			return hasCape
+				? { damagePercent: 620, hitOffsets: [0, 0] }
+				: { damagePercent: 545, hitOffsets: [0] };
+		}
 	},
 	{
 		name: 'Rend',
@@ -512,7 +582,15 @@ export const abilities: Ability[] = [
 		type: 'Basic',
 		adrenaline: 9,
 		target: 'Single',
-		damagePercent: '120% (300% for targets below 50% life points)',
+		// 110%-130% (avg 120%) normally; the wiki's "2.5x damage below 50% life" is 120 * 2.5 = 300
+		// (average of the underlying 275%-325% range) -- previously stored as the single string
+		// '120% (300% for targets below 50% life points)', which parseDamageMultiplier's regex
+		// wrongly averaged ALL THREE percents in that string together (120/300/50 -> 156.67%,
+		// applied unconditionally) rather than conditionally picking one or the other. Fixed by
+		// migrating onto `resolve` (see docs/ability-resolver-design.md) -- damagePercent itself
+		// stays the plain 120% average as a static fallback for any reader that doesn't go through
+		// resolveDamagePercent.
+		damagePercent: '120%',
 		damageVariants: null,
 		hitCountVariants: null,
 		cooldownText: '24 seconds (40 ticks)',
@@ -521,7 +599,13 @@ export const abilities: Ability[] = [
 			"Slash at the target unexpectedly. 110%-130% Melee damage. Generates 1 Bloodlust stack. Deals 2.5x damage if the target's Life Points are below 50%. Generates 9% Adrenaline.",
 		membersOnly: false,
 		iconPath: '/ability-icons/punish.png',
-		weapons: null
+		weapons: null,
+		offGcd: false,
+		hitProfile: { kind: 'single' },
+		buffProfile: null,
+		buffExtension: null,
+		verified: true,
+		resolve: ({ enemy }) => ({ damagePercent: enemy.hpPercent < 50 ? 300 : 120 })
 	},
 	{
 		name: 'Slaughter',
@@ -789,16 +873,25 @@ export const abilities: Ability[] = [
 		type: 'Basic',
 		adrenaline: 9,
 		target: 'Single',
-		damagePercent: null,
-		damageVariants: { Any: '100%', 'Dark bow or Gloomfire bow': '100%' },
+		// Not a real gear variant -- both damageVariants entries were identical (100% either way,
+		// dead scraped data), so this collapses to a plain damagePercent instead of a resolve
+		// function (see docs/ability-resolver-design.md, "Ranged" row).
+		damagePercent: '100%',
+		damageVariants: null,
 		hitCountVariants: null,
 		cooldownText: '1.8 seconds (3 ticks)',
-		equipment: 'Varies (see damageVariants)',
+		equipment: 'Any',
 		description:
 			'Attack the target. 90%-110% Ranged damage. Generates 9% Adrenaline. (If auto attck is enabled): Automatically triggered during combat.',
 		membersOnly: false,
 		iconPath: '/ability-icons/ranged.png',
-		weapons: null
+		weapons: null,
+		offGcd: false,
+		hitProfile: { kind: 'single' },
+		buffProfile: null,
+		buffExtension: null,
+		hitOffsets: [0],
+		verified: true
 	},
 	{
 		name: 'Snap Shot',
@@ -865,7 +958,8 @@ export const abilities: Ability[] = [
 		type: 'Ultimate',
 		adrenaline: -60,
 		target: 'Single',
-		damagePercent: null,
+		// Migrated onto `resolve` -- see docs/ability-resolver-design.md.
+		damagePercent: '460%',
 		damageVariants: { 'Igneous Kal-Xil or Igneous Kal-Zuk': '520%', Any: '460%' },
 		hitCountVariants: { Any: 4, 'Igneous Kal-Xil or Igneous Kal-Zuk': 8 },
 		cooldownText: '30 seconds (50 ticks)',
@@ -874,7 +968,15 @@ export const abilities: Ability[] = [
 			'Fire an enchanted shot at the target, striking them multiple times. 105%-125% Ranged damage per hit, 4 hits (Igneous Kal-Xil or Igneous Kal-Zuk: 55%-75% Ranged damage per hit, 8 hits). Damage is 60% effective in PvP. Back: Igneous Kal-Xil or Igneous Kal-Zuk',
 		membersOnly: true,
 		iconPath: '/ability-icons/deadshot.png',
-		weapons: null
+		weapons: null,
+		hitOffsets: [0, 0, 0, 0],
+		resolve: ({ gear }) => {
+			const capes = ['igneous kal-xil', 'igneous kal-zuk'];
+			const hasCape = !!gear.equippedCapeName && capes.includes(gear.equippedCapeName.toLowerCase());
+			return hasCape
+				? { damagePercent: 520, hitOffsets: Array(8).fill(0) }
+				: { damagePercent: 460, hitOffsets: Array(4).fill(0) };
+		}
 	},
 	{
 		name: 'Binding Shot',
@@ -1204,7 +1306,8 @@ export const abilities: Ability[] = [
 		type: 'Ultimate',
 		adrenaline: -60,
 		target: 'Single',
-		damagePercent: null,
+		// Migrated onto `resolve` -- see docs/ability-resolver-design.md.
+		damagePercent: '460%',
 		damageVariants: { Any: '460%', 'Igneous Kal-Mej or Igneous Kal-Zuk': '540%' },
 		hitCountVariants: { Any: 1, 'Igneous Kal-Mej or Igneous Kal-Zuk': 4 },
 		cooldownText: '30 seconds (50 ticks)',
@@ -1213,7 +1316,15 @@ export const abilities: Ability[] = [
 			'Bombard the target with each of the four elements. 420-500% Magic damage (Igneous Kal-Mej or Igneous Kal-Zuk: 120-150% Magic damage per hit, 4 hits). Damage is 60% effective in PvP.',
 		membersOnly: false,
 		iconPath: '/ability-icons/omnipower.png',
-		weapons: null
+		weapons: null,
+		hitOffsets: [0],
+		resolve: ({ gear }) => {
+			const capes = ['igneous kal-mej', 'igneous kal-zuk'];
+			const hasCape = !!gear.equippedCapeName && capes.includes(gear.equippedCapeName.toLowerCase());
+			return hasCape
+				? { damagePercent: 540, hitOffsets: Array(4).fill(0) }
+				: { damagePercent: 460, hitOffsets: [0] };
+		}
 	},
 	{
 		name: 'Dragon Breath',
@@ -1356,7 +1467,14 @@ export const abilities: Ability[] = [
 		type: 'Enhanced',
 		adrenaline: -25,
 		target: 'Single',
-		damagePercent: null,
+		// Migrated onto `resolve` -- see docs/ability-resolver-design.md. First real use of a
+		// full-SET gate (ctx.setPieceCounts) rather than a single equipped item (equippedCapeName):
+		// Tumeken's resplendence doesn't exist in armour.ts yet, so ctx.setPieceCounts[...] simply
+		// reads 0/undefined until that armour is added -- a no-op until then, not a new gap (same
+		// situation as Gloves of Passage and Havoc elsewhere in this codebase). hitOffsets is
+		// untouched by the set bonus (still a channel, 4 hits over 7 ticks), so only damagePercent
+		// needs `resolve` here.
+		damagePercent: '520%',
 		damageVariants: { Any: '520%', "4+ pieces of Tumeken's resplendence equipment": '624%' },
 		hitCountVariants: null,
 		cooldownText: '20.4 seconds (34 ticks)',
@@ -1365,7 +1483,16 @@ export const abilities: Ability[] = [
 			'Reach out with magical force and choke the target. Attack 4 times over 4.2s (7 ticks). 120%-140% Magic damage per hit. Channelled. Stuns and Binds the target for 3.6s (6 ticks). Completing the channel applies Channelled Might to self for 3.6s (6 ticks). Channelled Might Your Magic attacks gain +15% Critical Strike Damage.',
 		membersOnly: false,
 		iconPath: '/ability-icons/asphyxiate.png',
-		weapons: null
+		weapons: null,
+		offGcd: false,
+		hitProfile: { kind: 'channel', hits: 4, intervalTicks: 2, isBleed: false },
+		buffProfile: null,
+		buffExtension: null,
+		verified: true,
+		resolve: ({ ctx }) => {
+			const pieces = ctx.setPieceCounts["Tumeken's resplendence equipment"] ?? 0;
+			return { damagePercent: pieces >= 4 ? 624 : 520 };
+		}
 	},
 	{
 		name: 'Concentrated Blast',
@@ -1641,7 +1768,11 @@ export const abilities: Ability[] = [
 		type: 'Ultimate',
 		adrenaline: -60,
 		target: 'Multi',
-		damagePercent: null,
+		// Migrated onto `resolve` -- see docs/ability-resolver-design.md. damagePercent stays a
+		// range string here (like its damageVariants entries) rather than a single number, since
+		// the underlying wiki value genuinely is a range (225%-275% per hit), unlike every other
+		// migrated ability in this file.
+		damagePercent: '250%-750%',
 		damageVariants: { 'Igneous Kal-Mor or igneous Kal-Zuk': '250%-1000%', Any: '250%-750%' },
 		hitCountVariants: { Any: 4, 'Igneous Kal-Mor or igneous Kal-Zuk': 6 },
 		cooldownText: '60 seconds (100 ticks)',
@@ -1650,7 +1781,15 @@ export const abilities: Ability[] = [
 			'Launch a flurry of skulls at the target. 225%-275% Necromancy damage per hit. Bounces between enemies within 6 tiles of each other up to 4 times (Igneous Kal-Mor or Igneous Kal-Zuk: up to 6 times) (disabled in PvP) Prioritises enemies with higher maximum life points. If there are no enemies nearby it will bounce to the caster dealing no damage.',
 		membersOnly: true,
 		iconPath: '/ability-icons/death-skulls.png',
-		weapons: null
+		weapons: null,
+		hitOffsets: Array(4).fill(0),
+		resolve: ({ gear }) => {
+			const capes = ['igneous kal-mor', 'igneous kal-zuk'];
+			const hasCape = !!gear.equippedCapeName && capes.includes(gear.equippedCapeName.toLowerCase());
+			return hasCape
+				? { damagePercent: '250%-1000%', hitOffsets: Array(6).fill(0) }
+				: { damagePercent: '250%-750%', hitOffsets: Array(4).fill(0) };
+		}
 	},
 	{
 		name: 'Blood Siphon',

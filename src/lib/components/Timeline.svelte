@@ -8,6 +8,7 @@
 		cooldownZonesFor,
 		cumulativeDamage,
 		damageByTick,
+		DEFAULT_ENEMY,
 		findSwapTarget,
 		gcdPlacementAt,
 		groupBuffExtensions,
@@ -27,9 +28,11 @@
 		type Ability,
 		type AbilityType,
 		type CombatStyle,
+		type Enemy,
 		type GearContext,
 		type TimelinePlacement
 	} from '$lib';
+	import type { ModifierContext } from '$lib/formulas/modifiers';
 	import TimelineChart from './TimelineChart.svelte';
 
 	interface Props {
@@ -52,6 +55,11 @@
 		 *  formulas/hitChance.ts and damageByTick's `hitChanceByStyle` param. Optional so Timeline
 		 *  still works standalone/in tests with no target selected (defaults to 100% everywhere). */
 		hitChanceByStyle?: Partial<Record<CombatStyle, number>>;
+		/** The user's manually-entered "assumed enemy HP%" for HP-gated damage abilities (e.g.
+		 *  Punish's 2.5x below 50% life) -- see Enemy/resolveDamagePercent. Optional, defaults to
+		 *  full health (DEFAULT_ENEMY) so Timeline still works standalone/in tests with no
+		 *  assumption entered. */
+		enemy?: Enemy;
 		/** Every setup's own damage series (including this one), for the multi-setup overlay chart --
 		 *  see `+page.svelte`'s `setupSeries`. Optional so Timeline can still be used/tested standalone
 		 *  with just its own single-setup chart. */
@@ -80,7 +88,8 @@
 		styleFilterEnabled = $bindable(),
 		timelineLength = $bindable(),
 		overlaySeries,
-		hitChanceByStyle = {}
+		hitChanceByStyle = {},
+		enemy = DEFAULT_ENEMY
 	}: Props = $props();
 
 	let paletteSearch: string = $state('');
@@ -660,6 +669,16 @@
 
 	const gearForDamage = $derived(gearContext);
 
+	/** For a `resolve`-migrated ability's damagePercent/hitOffsets that depend on global context
+	 *  (e.g. Asphyxiate's Tumeken's-resplendence set check) -- see docs/ability-resolver-design.md. */
+	const modifierContextForDamage = $derived<ModifierContext>({
+		combatStyle,
+		ringOfVigourActive: hasRingOfVigour,
+		furyOfTheSmallActive: hasFuryOfTheSmall,
+		setPieceCounts,
+		hasMeleeWeaponEquipped
+	});
+
 	const berserkBuffs = $derived(allBuffs.buffs.filter((b) => b.abilityName === 'Berserk'));
 	const searingWindsBuffs = $derived(allBuffs.buffs.filter((b) => b.abilityName === 'Galeshot'));
 	const deathsSwiftnessBuffs = $derived(
@@ -681,7 +700,9 @@
 			berserkBuffs,
 			searingWindsBuffs,
 			deathsSwiftnessBuffs,
-			hitChanceByStyle
+			hitChanceByStyle,
+			enemy,
+			modifierContextForDamage
 		)
 	);
 	const cumulative = $derived(cumulativeDamage(tickDamage));

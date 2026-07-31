@@ -16,6 +16,7 @@ import {
 	cooldownZonesFor,
 	cumulativeDamage,
 	damageByTick,
+	DEFAULT_ENEMY,
 	earliestAvailableTick,
 	effectiveCooldownTicks,
 	findSwapTarget,
@@ -56,6 +57,7 @@ import {
 	resolveEmittedBuffs,
 	resolveEndlessAssaultBleeds,
 	resolveGreaterFuryBuffs,
+	resolveHitOffsets,
 	resolveHavocBuffs,
 	resolveHitCountVariant,
 	respectsCooldown,
@@ -76,6 +78,7 @@ const rend = abilities.find((a) => a.name === 'Rend')!;
 const fury = abilities.find((a) => a.name === 'Fury')!;
 const adaptiveStrike = abilities.find((a) => a.name === 'Adaptive Strike')!;
 const overpower = abilities.find((a) => a.name === 'Overpower')!; // type: 'Ultimate', adrenaline: -60
+const punish = abilities.find((a) => a.name === 'Punish')!; // resolve: enemy.hpPercent < 50 -> 300%, else 120%
 const revenge = abilities.find((a) => a.name === 'Revenge')!; // type: 'Threshold', adrenaline: -15
 const assault = abilities.find((a) => a.name === 'Assault')!;
 const corruptionBlast = abilities.find((a) => a.name === 'Corruption Blast')!;
@@ -157,6 +160,12 @@ describe('resolveDamagePercent', () => {
 
 	it('falls back to the "Any" value with no matching gear condition', () => {
 		expect(resolveDamagePercent(overpower, NEUTRAL_GEAR)).toBe('545%');
+	});
+
+	it("prefers ability.resolve's damagePercent output over the static field when present (Punish, enemy-HP-gated)", () => {
+		expect(resolveDamagePercent(punish, NEUTRAL_GEAR, { hpPercent: 100 })).toBe('120%');
+		expect(resolveDamagePercent(punish, NEUTRAL_GEAR, { hpPercent: 49 })).toBe('300%');
+		expect(resolveDamagePercent(punish, NEUTRAL_GEAR, { hpPercent: 50 })).toBe('120%'); // boundary: 50 is NOT "below 50"
 	});
 });
 
@@ -1001,6 +1010,75 @@ describe('hitCountFor', () => {
 
 	it('defaults to a single hit otherwise (Rend)', () => {
 		expect(hitCountFor(rend)).toBe(1);
+	});
+});
+
+describe('resolveHitOffsets / resolveDamagePercent (resolve-migrated abilities)', () => {
+	const dualWieldGear: GearContext = { ...NEUTRAL_GEAR, hasOffHandWeapon: true };
+
+	it('Adaptive Strike: 1 hit [0] main-hand/two-handed, 2 simultaneous hits [0, 0] dual wield', () => {
+		expect(resolveHitOffsets(adaptiveStrike, NEUTRAL_GEAR)).toEqual([0]);
+		expect(resolveHitOffsets(adaptiveStrike, { ...NEUTRAL_GEAR, isTwoHanded: true })).toEqual([0]);
+		expect(resolveHitOffsets(adaptiveStrike, dualWieldGear)).toEqual([0, 0]);
+		expect(resolveDamagePercent(adaptiveStrike, NEUTRAL_GEAR)).toBe('130%');
+		expect(resolveDamagePercent(adaptiveStrike, dualWieldGear)).toBe('135%');
+	});
+
+	it('Overpower: 545% 1 hit with no cape, 620% 2 hits with Igneous Kal-Ket/Kal-Zuk', () => {
+		expect(resolveDamagePercent(overpower, NEUTRAL_GEAR)).toBe('545%');
+		expect(resolveHitOffsets(overpower, NEUTRAL_GEAR)).toEqual([0]);
+		const withCape: GearContext = { ...NEUTRAL_GEAR, equippedCapeName: 'Igneous Kal-Zuk' };
+		expect(resolveDamagePercent(overpower, withCape)).toBe('620%');
+		expect(resolveHitOffsets(overpower, withCape)).toEqual([0, 0]);
+	});
+
+	it('Deadshot: 460% 4 hits with no cape, 520% 8 hits with Igneous Kal-Xil/Kal-Zuk', () => {
+		expect(resolveDamagePercent(deadshot, NEUTRAL_GEAR)).toBe('460%');
+		expect(resolveHitOffsets(deadshot, NEUTRAL_GEAR)).toEqual([0, 0, 0, 0]);
+		const withCape: GearContext = { ...NEUTRAL_GEAR, equippedCapeName: 'Igneous Kal-Xil' };
+		expect(resolveDamagePercent(deadshot, withCape)).toBe('520%');
+		expect(resolveHitOffsets(deadshot, withCape)).toEqual([0, 0, 0, 0, 0, 0, 0, 0]);
+	});
+
+	it('Omnipower: 460% 1 hit with no cape, 540% 4 hits with Igneous Kal-Mej/Kal-Zuk', () => {
+		const omnipower = abilities.find((a) => a.name === 'Omnipower')!;
+		expect(resolveDamagePercent(omnipower, NEUTRAL_GEAR)).toBe('460%');
+		expect(resolveHitOffsets(omnipower, NEUTRAL_GEAR)).toEqual([0]);
+		const withCape: GearContext = { ...NEUTRAL_GEAR, equippedCapeName: 'Igneous Kal-Mej' };
+		expect(resolveDamagePercent(omnipower, withCape)).toBe('540%');
+		expect(resolveHitOffsets(omnipower, withCape)).toEqual([0, 0, 0, 0]);
+	});
+
+	it("Death Skulls: 250%-750% 4 bounces with no cape, 250%-1000% 6 bounces with Igneous Kal-Mor/Kal-Zuk", () => {
+		const deathSkulls = abilities.find((a) => a.name === 'Death Skulls')!;
+		expect(resolveDamagePercent(deathSkulls, NEUTRAL_GEAR)).toBe('250%-750%');
+		expect(resolveHitOffsets(deathSkulls, NEUTRAL_GEAR)).toEqual([0, 0, 0, 0]);
+		const withCape: GearContext = { ...NEUTRAL_GEAR, equippedCapeName: 'Igneous Kal-Mor' };
+		expect(resolveDamagePercent(deathSkulls, withCape)).toBe('250%-1000%');
+		expect(resolveHitOffsets(deathSkulls, withCape)).toEqual([0, 0, 0, 0, 0, 0]);
+	});
+
+	it("Asphyxiate: 520% with fewer than 4 Tumeken's resplendence pieces, 624% with 4+", () => {
+		const asphyxiate = abilities.find((a) => a.name === 'Asphyxiate')!;
+		const ctxNoSet: ModifierContext = {
+			combatStyle: null,
+			ringOfVigourActive: false,
+			furyOfTheSmallActive: false,
+			setPieceCounts: {},
+			hasMeleeWeaponEquipped: false
+		};
+		const ctxWithSet: ModifierContext = {
+			...ctxNoSet,
+			setPieceCounts: { "Tumeken's resplendence equipment": 4 }
+		};
+		expect(resolveDamagePercent(asphyxiate, NEUTRAL_GEAR, DEFAULT_ENEMY, ctxNoSet)).toBe('520%');
+		expect(resolveDamagePercent(asphyxiate, NEUTRAL_GEAR, DEFAULT_ENEMY, ctxWithSet)).toBe('624%');
+	});
+
+	it('Ranged has no damageVariants left (collapsed dead variant) and a plain 100% damagePercent', () => {
+		const ranged = abilities.find((a) => a.name === 'Ranged')!;
+		expect(ranged.damageVariants).toBeNull();
+		expect(resolveDamagePercent(ranged, NEUTRAL_GEAR)).toBe('100%');
 	});
 });
 

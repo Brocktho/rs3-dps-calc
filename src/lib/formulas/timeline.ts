@@ -1,7 +1,7 @@
 /**
  * Rotation timeline: ticks, Global Cooldown, and per-placement damage resolution.
  */
-import type { Ability } from '../data/abilities';
+import type { Ability, Enemy } from '../data/abilities';
 import type { CombatStyle } from './abilityDamage';
 import type {
 	BuffEmission,
@@ -30,6 +30,22 @@ export interface GearContext {
 	hasOffHandWeapon: boolean;
 	equippedCapeName: string | null;
 }
+
+/** Default enemy assumption for callers that don't care about HP-gated damage (e.g. tests/call
+ *  sites unrelated to Punish) -- full health, matching what "no assumption entered yet" should
+ *  mean in the UI too. */
+export const DEFAULT_ENEMY: Enemy = { hpPercent: 100 };
+
+/** Default player global-state context for callers that don't care about an ability's `resolve`
+ *  output depending on it (e.g. Asphyxiate's Tumeken's-resplendence set check) -- no sets worn, no
+ *  unlocks active, matching every other "no assumption entered" default in this file. */
+const DEFAULT_MODIFIER_CONTEXT: ModifierContext = {
+	combatStyle: null,
+	ringOfVigourActive: false,
+	furyOfTheSmallActive: false,
+	setPieceCounts: {},
+	hasMeleeWeaponEquipped: false
+};
 
 /**
  * A small set of abilities (15 of 142, e.g. Dive, Bladed Dive, Surge, quiver ammo swaps, High
@@ -98,16 +114,39 @@ function resolveGearVariant<T>(variants: Record<string, T>, gear: GearContext): 
 	return (anyEntry ?? entries[0])[1];
 }
 
-/** Picks the right damageVariants entry for the player's current gear -- see resolveGearVariant. */
-export function resolveDamagePercent(ability: Ability, gear: GearContext): string | null {
-	if (ability.damagePercent !== null) return ability.damagePercent;
-	if (!ability.damageVariants) return null;
-	return resolveGearVariant(ability.damageVariants, gear);
+/** Picks the ability's damage percent for the player's current gear, global context, and assumed
+ *  enemy state, normalized to a plain string so every downstream consumer (parseDamageMultiplier)
+ *  only ever handles one shape. Resolution order (see docs/ability-resolver-design.md):
+ *    1. `ability.resolve`'s `damagePercent` output, if the ability declares a resolver AND it
+ *       actually returns one (a resolver that only overrides e.g. `hitOffsets` falls through).
+ *    2. The ability's own static `damagePercent` (a raw `number` becomes `"<value>%"`; the legacy
+ *       enemy-only function form from before `resolve` existed is still honored here too).
+ *    3. `damageVariants`, gear-matched via the legacy `resolveGearVariant` prose-string matcher.
+ *  `gear`/`enemy`/`ctx` each default to a neutral/empty value for callers that don't care. */
+export function resolveDamagePercent(
+	ability: Ability,
+	gear: GearContext,
+	enemy: Enemy = DEFAULT_ENEMY,
+	ctx: ModifierContext = DEFAULT_MODIFIER_CONTEXT
+): string | null {
+	const resolved = ability.resolve?.({ ctx, gear, enemy })?.damagePercent;
+	const raw =
+		resolved !== undefined
+			? resolved
+			: ability.damagePercent !== null
+				? ability.damagePercent
+				: ability.damageVariants
+					? resolveGearVariant(ability.damageVariants, gear)
+					: null;
+	if (raw === null) return null;
+	const value = typeof raw === 'function' ? raw(enemy) : raw;
+	return typeof value === 'number' ? `${value}%` : value;
 }
 
 /** Picks the right hitCountVariants entry for the player's current gear (e.g. Deadshot: 4 hits
  *  normally, 8 with Igneous Kal-Xil/Kal-Zuk) -- see resolveGearVariant. null if the ability has no
- *  gear-dependent hit count. */
+ *  gear-dependent hit count. Legacy fallback tier -- see resolveHitOffsets, which supersedes this
+ *  for a migrated ability. */
 export function resolveHitCountVariant(ability: Ability, gear: GearContext): number | null {
 	if (!ability.hitCountVariants) return null;
 	return resolveGearVariant(ability.hitCountVariants, gear);
@@ -116,21 +155,78 @@ export function resolveHitCountVariant(ability: Ability, gear: GearContext): num
 /** Resolves `ability.damagesOnTick` for the player's current gear -- either the flat array
  *  directly (gear-invariant timing, e.g. Ricochet), or the right entry of a gear-variant
  *  dictionary keyed like damageVariants/hitCountVariants (e.g. Adaptive Strike: one hit for
- *  2h/main-hand-only, two simultaneous hits for dual wield). null if unset. */
+ *  2h/main-hand-only, two simultaneous hits for dual wield). null if unset. Legacy fallback tier --
+ *  see resolveHitOffsets, which supersedes this for a migrated ability. */
 export function resolveDamagesOnTick(ability: Ability, gear: GearContext): number[] | null {
 	if (!ability.damagesOnTick) return null;
 	if (Array.isArray(ability.damagesOnTick)) return ability.damagesOnTick;
 	return resolveGearVariant(ability.damagesOnTick, gear);
 }
 
+/**
+ * The tick offset of every hit `ability` lands, one entry per hit -- e.g. `[0]` for a plain single
+ * hit, `[0, 1, 1]` for Ricochet, `[0, 3, 6, 9, 12, 15]` for Slaughter. Supersedes `hitCountFor` +
+ * `parseHitProfile`'s channel case + `resolveDamagesOnTick` for a migrated ability: hit COUNT is
+ * just the returned array's `.length`, not a separate concept. Resolution order (see
+ * docs/ability-resolver-design.md):
+ *   1. `ability.resolve`'s `hitOffsets` output, if present.
+ *   2. The ability's own static `hitOffsets` field, if set.
+ *   3. Legacy fallback: `hitCountVariants` (gear) -> a channel `hitProfile`'s evenly-spaced hits ->
+ *      `resolveDamagesOnTick` -> a bare "N hits." description match -> `HIT_COUNT_OVERRIDES` -> 1.
+ */
+export function resolveHitOffsets(
+	ability: Ability,
+	gear: GearContext,
+	enemy: Enemy = DEFAULT_ENEMY,
+	ctx: ModifierContext = DEFAULT_MODIFIER_CONTEXT
+): number[] {
+	const resolved = ability.resolve?.({ ctx, gear, enemy })?.hitOffsets;
+	if (resolved !== undefined) return resolved;
+	if (ability.hitOffsets !== undefined) return ability.hitOffsets;
+
+	// Legacy fallback chain -- unchanged behavior for every not-yet-migrated ability. A channel's
+	// hits are evenly spaced by its own intervalTicks; damagesOnTick's explicit array wins over a
+	// same-tick assumption; otherwise every hit from hitCountFor's own legacy chain lands
+	// simultaneously (offset 0), matching this app's behavior before hitOffsets existed.
+	const profile = parseHitProfile(ability);
+	if (profile.kind === 'channel') {
+		const hits = resolveHitCountVariant(ability, gear) ?? profile.hits;
+		return Array.from({ length: hits }, (_, i) => i * profile.intervalTicks);
+	}
+
+	const onTick = resolveDamagesOnTick(ability, gear);
+	if (onTick) return onTick;
+
+	return Array.from({ length: hitCountFor(ability, gear) }, () => 0);
+}
+
+/** Whether `ability`'s hits are an unconditional bleed/DoT -- see resolveChannels for how this
+ *  affects interruption. Resolution order: `ability.resolve`'s `isBleed` output, then the
+ *  ability's own static `isBleed` field, then BLEED_ABILITY_NAMES (the legacy hand-curated set). */
+export function resolveIsBleed(
+	ability: Ability,
+	gear: GearContext = NO_GEAR_CONTEXT,
+	enemy: Enemy = DEFAULT_ENEMY,
+	ctx: ModifierContext = DEFAULT_MODIFIER_CONTEXT
+): boolean {
+	const resolved = ability.resolve?.({ ctx, gear, enemy })?.isBleed;
+	if (resolved !== undefined) return resolved;
+	if (ability.isBleed !== undefined) return ability.isBleed;
+	return BLEED_ABILITY_NAMES.has(ability.name);
+}
+
 /** Computes the damage a single placed ability deals, given the player's current total Ability
- *  Damage (AD) figure and gear (for damageVariants resolution). */
+ *  Damage (AD) figure, gear (for damageVariants resolution), assumed enemy state (for an HP-gated
+ *  `damagePercent`, e.g. Punish), and global context (for a `resolve`d damagePercent depending on
+ *  e.g. an equipped set -- Asphyxiate). `enemy`/`ctx` default to neutral values. */
 export function abilityDamageForPlacement(
 	ability: Ability,
 	adTotal: number,
-	gear: GearContext
+	gear: GearContext,
+	enemy: Enemy = DEFAULT_ENEMY,
+	ctx: ModifierContext = DEFAULT_MODIFIER_CONTEXT
 ): number {
-	const raw = resolveDamagePercent(ability, gear);
+	const raw = resolveDamagePercent(ability, gear, enemy, ctx);
 	const multiplier = parseDamageMultiplier(raw);
 	return multiplier === null ? 0 : Math.floor(adTotal * multiplier);
 }
@@ -140,9 +236,16 @@ export function abilityDamageForPlacement(
  *  `resolveDamagePercent(...) !== null`, since a non-damaging ability's damagePercent is often the
  *  literal string `'N/A'` rather than `null` (e.g. Surge) -- `parseDamageMultiplier` is what
  *  actually recognizes that as "no damage", same check `abilityDamageForPlacement` already relies
- *  on to zero those out. */
-export function abilityDealsDamage(ability: Ability, gear: GearContext): boolean {
-	return parseDamageMultiplier(resolveDamagePercent(ability, gear)) !== null;
+ *  on to zero those out. `enemy`/`ctx` default to neutral values -- irrelevant for this check in
+ *  practice, since every current context-dependent ability (Punish, Asphyxiate) deals damage
+ *  regardless of context, only the AMOUNT varies. */
+export function abilityDealsDamage(
+	ability: Ability,
+	gear: GearContext,
+	enemy: Enemy = DEFAULT_ENEMY,
+	ctx: ModifierContext = DEFAULT_MODIFIER_CONTEXT
+): boolean {
+	return parseDamageMultiplier(resolveDamagePercent(ability, gear, enemy, ctx)) !== null;
 }
 
 export function placementAbility(
@@ -1630,7 +1733,9 @@ export function damageByTick(
 	berserkBuffs: readonly ResolvedBuff[] = [],
 	searingWindsBuffs: readonly ResolvedBuff[] = [],
 	deathsSwiftnessBuffs: readonly ResolvedBuff[] = [],
-	hitChanceByStyle: Partial<Record<CombatStyle, number>> = {}
+	hitChanceByStyle: Partial<Record<CombatStyle, number>> = {},
+	enemy: Enemy = DEFAULT_ENEMY,
+	ctx: ModifierContext = DEFAULT_MODIFIER_CONTEXT
 ): number[] {
 	const result = new Array(timelineLength).fill(0);
 	const channels = resolveChannels(placements, abilities, timelineLength, bleedPlacementIds);
@@ -1641,7 +1746,7 @@ export function damageByTick(
 		if (placement.startTick < 0 || placement.startTick >= timelineLength) continue;
 
 		const profile = parseHitProfile(ability);
-		let totalDamage = abilityDamageForPlacement(ability, adTotal, gear);
+		let totalDamage = abilityDamageForPlacement(ability, adTotal, gear, enemy, ctx);
 		if (critPlacementIds.has(placement.id)) {
 			totalDamage = Math.floor(totalDamage * GREATER_FURY_CRIT_MULTIPLIER);
 		}
@@ -1690,21 +1795,20 @@ export function damageByTick(
 				result[tick] += (boosted ? boostedPerHitDamage : perHitDamage) + searingWindsBonus;
 			});
 		} else {
-			const hitCount = hitCountFor(ability, gear);
+			// resolveHitOffsets supersedes hitCountFor + resolveDamagesOnTick for a migrated ability
+			// (its result IS both the hit count, via .length, and the per-hit tick offsets from the
+			// placement's own startTick, e.g. Ricochet's [0, 1, 1]) -- falls back to the exact same
+			// legacy behavior as before for any not-yet-migrated ability.
+			const offsets = resolveHitOffsets(ability, gear, enemy, ctx);
+			const hitCount = offsets.length;
 			const perHitDamage = Math.min(Math.floor(totalDamage / hitCount), MAX_DAMAGE_PER_HIT);
 			const boostedPerHitDamage = Math.min(
 				Math.floor(perHitDamage * CHAOS_ROAR_DAMAGE_MULTIPLIER),
 				MAX_DAMAGE_PER_HIT
 			);
-			// Per-hit tick offsets from the placement's own startTick, e.g. Ricochet's [0, 1, 1] --
-			// defaults to every hit landing on startTick (offset 0) when unset, same as before this
-			// field existed. Only applied up to `hitCount` entries; extra offsets beyond hitCount
-			// (e.g. a gear variant with fewer hits than damagesOnTick has entries for) are ignored.
-			const offsets = resolveDamagesOnTick(ability, gear) ?? [];
-			for (let i = 0; i < hitCount; i++) {
-				const offset = offsets[i] ?? 0;
+			offsets.forEach((offset, i) => {
 				const tick = placement.startTick + offset;
-				if (tick < 0 || tick >= timelineLength) continue;
+				if (tick < 0 || tick >= timelineLength) return;
 				const searingWindsBonus =
 					searingWindsBonusPerHit > 0 &&
 					searingWindsBuffs.some((b) => tick >= b.startTick && tick <= b.endTick)
@@ -1712,7 +1816,7 @@ export function damageByTick(
 						: 0;
 				const boosted = hasChaosRoarBonus && i === 0;
 				result[tick] += (boosted ? boostedPerHitDamage : perHitDamage) + searingWindsBonus;
-			}
+			});
 		}
 	}
 	return result;

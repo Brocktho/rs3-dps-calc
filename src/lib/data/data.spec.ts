@@ -415,8 +415,13 @@ describe('ability data', () => {
 		);
 	});
 
-	it('has either a fixed damagePercent, damageVariants, or neither (never both) for every ability', () => {
+	it('has either a fixed damagePercent, damageVariants, or neither (never both) for every ability NOT yet migrated onto `resolve`', () => {
+		// A `resolve`-migrated ability (see docs/ability-resolver-design.md) intentionally keeps
+		// BOTH a static damagePercent (the fallback value) AND its legacy damageVariants (kept live,
+		// not yet deleted, per the doc's "old fields stay until nothing references them" policy) --
+		// so this invariant only applies to abilities that haven't been migrated at all.
 		for (const ability of abilities) {
+			if (ability.resolve) continue;
 			expect(ability.damagePercent !== null && ability.damageVariants !== null).toBe(false);
 		}
 	});
@@ -435,10 +440,13 @@ describe('ability data', () => {
 	});
 
 	it('splits the equipment-variant abilities into a damageVariants dictionary, not duplicate entries', () => {
+		// Ranged is deliberately excluded: its "variant" had identical values on both branches
+		// (dead scraped data, not a real gear dependency) -- collapsed to a plain damagePercent with
+		// no damageVariants at all as part of the resolve migration (see
+		// docs/ability-resolver-design.md).
 		for (const name of [
 			'Adaptive Strike',
 			'Overpower',
-			'Ranged',
 			'Deadshot',
 			'Omnipower',
 			'Asphyxiate',
