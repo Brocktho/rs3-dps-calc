@@ -987,8 +987,10 @@ describe('hitCountFor', () => {
 		expect(hitCountFor(assault)).toBe(4);
 	});
 
-	it('parses a bare "N hits." phrase (Adaptive Strike: 2)', () => {
-		expect(hitCountFor(adaptiveStrike)).toBe(2);
+	it('uses hitCountVariants for a gear-dependent hit count (Adaptive Strike: 1 main-hand-only/two-handed, 2 dual wield)', () => {
+		expect(hitCountFor(adaptiveStrike, NEUTRAL_GEAR)).toBe(1); // main hand, no offhand
+		expect(hitCountFor(adaptiveStrike, { ...NEUTRAL_GEAR, isTwoHanded: true })).toBe(1);
+		expect(hitCountFor(adaptiveStrike, { ...NEUTRAL_GEAR, hasOffHandWeapon: true })).toBe(2); // dual wield
 	});
 
 	it('uses the hand-curated override for Ricochet (3)', () => {

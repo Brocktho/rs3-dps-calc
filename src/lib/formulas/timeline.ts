@@ -106,6 +106,16 @@ export function resolveHitCountVariant(ability: Ability, gear: GearContext): num
 	return resolveGearVariant(ability.hitCountVariants, gear);
 }
 
+/** Resolves `ability.damagesOnTick` for the player's current gear -- either the flat array
+ *  directly (gear-invariant timing, e.g. Ricochet), or the right entry of a gear-variant
+ *  dictionary keyed like damageVariants/hitCountVariants (e.g. Adaptive Strike: one hit for
+ *  2h/main-hand-only, two simultaneous hits for dual wield). null if unset. */
+export function resolveDamagesOnTick(ability: Ability, gear: GearContext): number[] | null {
+	if (!ability.damagesOnTick) return null;
+	if (Array.isArray(ability.damagesOnTick)) return ability.damagesOnTick;
+	return resolveGearVariant(ability.damagesOnTick, gear);
+}
+
 /** Computes the damage a single placed ability deals, given the player's current total Ability
  *  Damage (AD) figure and gear (for damageVariants resolution). */
 export function abilityDamageForPlacement(
@@ -1106,8 +1116,18 @@ export function requiredTimelineLength(
 		if (!ability) continue;
 		max = Math.max(max, p.startTick + abilityTickSpan(ability));
 
-		if (ability.damagesOnTick && ability.damagesOnTick.length > 0) {
-			max = Math.max(max, p.startTick + Math.max(...ability.damagesOnTick) + 1);
+		if (ability.damagesOnTick) {
+			// No `gear` available here (see parseHitProfile/parseBuffInfo above, same constraint) --
+			// take the max offset across every gear variant as a safe upper bound instead of
+			// resolving to one specific variant.
+			const offsetLists = Array.isArray(ability.damagesOnTick)
+				? [ability.damagesOnTick]
+				: Object.values(ability.damagesOnTick);
+			for (const offsets of offsetLists) {
+				if (offsets.length > 0) {
+					max = Math.max(max, p.startTick + Math.max(...offsets) + 1);
+				}
+			}
 		}
 
 		const buff = parseBuffInfo(ability);
@@ -1503,7 +1523,7 @@ export function damageByTick(
 			// defaults to every hit landing on startTick (offset 0) when unset, same as before this
 			// field existed. Only applied up to `hitCount` entries; extra offsets beyond hitCount
 			// (e.g. a gear variant with fewer hits than damagesOnTick has entries for) are ignored.
-			const offsets = ability.damagesOnTick ?? [];
+			const offsets = resolveDamagesOnTick(ability, gear) ?? [];
 			for (let i = 0; i < hitCount; i++) {
 				const offset = offsets[i] ?? 0;
 				const tick = placement.startTick + offset;

@@ -87,8 +87,15 @@ export interface Ability {
 	 *  already has its own timing via `hitProfile.intervalTicks`. Unset means "every hit lands on
 	 *  the placement's own startTick, offset 0" -- the same behavior every ability had before this
 	 *  field existed, so leaving it unset is a safe, unverified default, not a fallback to regex
-	 *  parsing (there's no description wording for this timing to parse in the first place). */
-	damagesOnTick?: number[];
+	 *  parsing (there's no description wording for this timing to parse in the first place).
+	 *
+	 *  A `Record` keyed exactly like `damageVariants`/`hitCountVariants` (e.g. 'Dual wield',
+	 *  'Main hand, no offhand', 'Two-handed') is for abilities whose hit TIMING (not just damage or
+	 *  hit count) itself differs by equipped weapon -- e.g. Adaptive Strike: a single hit at offset
+	 *  0 for 2h/main-hand-only, but two simultaneous hits (`[0, 0]`) for dual wield. Resolved via
+	 *  the same gear-matching logic as those two fields (see resolveDamagesOnTick/
+	 *  resolveGearVariant in timeline.ts) -- reuse that convention rather than inventing new keys. */
+	damagesOnTick?: number[] | Record<string, number[]>;
 
 	/** Manual attestation that every mechanic this ability actually has has been hand-checked
 	 *  against the wiki and (where relevant) backed by the typed fields above, rather than left
@@ -227,7 +234,10 @@ export const abilities: Ability[] = [
 			'Attack the target. 110%-130% Melee damage. Generates 1 Bloodlust stack. Generates 9% Adrenaline. Automatically triggered during combat.',
 		membersOnly: false,
 		iconPath: '/ability-icons/attack.png',
-		weapons: null
+		weapons: null,
+		verified: true,
+		hitProfile: { kind: 'single' },
+		damagesOnTick: [0]
 	},
 	{
 		name: 'Assault',
@@ -258,14 +268,24 @@ export const abilities: Ability[] = [
 		target: 'Single',
 		damagePercent: null,
 		damageVariants: { 'Dual wield': '135%', 'Main hand, no offhand': '130%', 'Two-handed': '130%' },
-		hitCountVariants: null,
+		hitCountVariants: { 'Dual wield': 2, 'Main hand, no offhand': 1, 'Two-handed': 1 },
 		cooldownText: '5.4 seconds (9 ticks)',
 		equipment: 'Varies (see damageVariants)',
 		description:
 			'Channel your weapons form into an adaptive strike. 60%-75% Melee damage per hit. 2 hits. Generates 1 Bloodlust stack. Generates 12% Adrenaline. The ability changes based on your equipped weapon. 2h Swipe your weapon in front of you. 2x Strike at the target with both weapons.',
 		membersOnly: false,
 		iconPath: '/ability-icons/adaptive-strike.png',
-		weapons: null
+		weapons: null,
+		offGcd: false,
+		hitProfile: { kind: 'single' },
+		buffProfile: null,
+		buffExtension: null,
+		damagesOnTick: {
+			'Dual wield': [0, 0],
+			'Main hand, no offhand': [0],
+			'Two-handed': [0]
+		},
+		verified: true
 	},
 	{
 		name: 'Overpower',
