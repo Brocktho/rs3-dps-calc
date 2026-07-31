@@ -194,6 +194,22 @@
 		return weaponIconPath(ability);
 	}
 
+	/** Whether the warning chip should render at all: either the ability hasn't been manually
+	 *  verified, or it has a specific known-quirk note worth surfacing regardless. */
+	function hasImplWarning(ability: Ability): boolean {
+		return !ability.verified || !!ability.implQuirks;
+	}
+
+	/** The chip's tooltip text -- a specific implQuirks note when set, else the generic
+	 *  not-yet-verified message (only shown when the ability is actually unverified). */
+	function implWarningMessage(ability: Ability): string {
+		if (ability.implQuirks) return ability.implQuirks;
+		if (!ability.verified) {
+			return 'Not fully implemented: behavior inferred from description text, not yet manually verified';
+		}
+		return '';
+	}
+
 	function placeAbility(ability: Ability) {
 		const tick = nextOpenTick(
 			ability,
@@ -754,8 +770,8 @@
 									type="button"
 									class="palette-icon"
 									class:off-gcd={isOffGcdAbility(ability)}
-									title="{ability.name}{isOffGcdAbility(ability) ? ' (off-GCD)' : ''}{!ability.verified
-										? ' -- not fully implemented: behavior inferred from description text, not yet manually verified'
+									title="{ability.name}{isOffGcdAbility(ability) ? ' (off-GCD)' : ''}{hasImplWarning(ability)
+										? ' -- ' + implWarningMessage(ability)
 										: ''}"
 									draggable="true"
 									ondragstart={(e) => onPaletteDragStart(e, ability)}
@@ -772,7 +788,7 @@
 											height="14"
 										/>
 									{/if}
-									{#if !ability.verified}
+									{#if hasImplWarning(ability)}
 										<span class="unverified-badge" aria-hidden="true">!</span>
 									{/if}
 								</button>

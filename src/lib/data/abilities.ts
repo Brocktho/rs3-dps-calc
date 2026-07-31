@@ -105,6 +105,13 @@ export interface Ability {
 	 *  this is never inferred, only set by a human confirming the ability's behavior. Drives the
 	 *  "not fully implemented" warning chip in Timeline.svelte. */
 	verified?: boolean;
+	/** A specific, named note about what's simplified or not fully modeled for this ability (e.g.
+	 *  "Crits are always applied as +50% damage at this time") -- for an ability that's still worth
+	 *  flagging even once verified, because of a real, known, permanent simplification rather than
+	 *  "nobody's checked this yet." Independent of `verified`: the warning chip in Timeline.svelte
+	 *  shows whenever EITHER `!verified` OR `implQuirks` is set, using `implQuirks` as its message
+	 *  when present (falling back to the generic "not fully implemented" text otherwise). */
+	implQuirks?: string;
 
 	/** Every buff/debuff THIS ability itself starts or re-triggers by being cast (or, for a
 	 *  `requiresDamagingHit` emission, by successfully landing) -- see BuffEmission for the full
@@ -336,9 +343,10 @@ export const abilities: Ability[] = [
 		membersOnly: false,
 		iconPath: '/ability-icons/rend.png',
 		weapons: null,
-		verified: true,
+		verified: false,
 		damagesOnTick: [0],
 		hitProfile: { kind: 'single' },
+		implQuirks: "This does not apply gloves of passage buffs"
 	},
 	{
 		name: 'Fury',
@@ -393,7 +401,8 @@ export const abilities: Ability[] = [
 				}
 			}
 		],
-		verified: true
+		verified: true,
+		implQuirks: "Crits are always applied as +50% damage at this time"
 	},
 	{
 		name: 'Backhand',
