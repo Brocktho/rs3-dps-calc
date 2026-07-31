@@ -1,3 +1,5 @@
+import type { BuffEmission } from '../formulas/modifiers';
+
 export type AbilityStyle = 'melee' | 'ranged' | 'magic' | 'necromancy' | 'defence' | 'constitution';
 export type AbilityType = 'Basic' | 'Enhanced' | 'Threshold' | 'Ultimate' | 'Utility' | 'Special';
 export type AbilityTarget = 'Self' | 'Single' | 'Area' | 'Multi' | 'Varies';
@@ -103,6 +105,16 @@ export interface Ability {
 	 *  this is never inferred, only set by a human confirming the ability's behavior. Drives the
 	 *  "not fully implemented" warning chip in Timeline.svelte. */
 	verified?: boolean;
+
+	/** Every buff/debuff THIS ability itself starts or re-triggers by being cast (or, for a
+	 *  `requiresDamagingHit` emission, by successfully landing) -- see BuffEmission for the full
+	 *  shape and the resolveEmittedBuffs engine in timeline.ts that interprets it. Does NOT cover
+	 *  emissions this ability merely happens to match as a category trigger for something it
+	 *  doesn't own (e.g. Overpower matching Havoc's "any melee ultimate" trigger) -- those are
+	 *  declared on the owning set/item's own data instead (see BuffEmission's doc comment). Absent
+	 *  for the overwhelming majority of abilities, which emit nothing beyond their own generic
+	 *  self-buff (already covered by `buffProfile`/`parseBuffInfo`) or nothing at all. */
+	emits?: BuffEmission[];
 }
 
 /**
@@ -323,7 +335,10 @@ export const abilities: Ability[] = [
 			'Slice through the target. 135%-165% Melee damage. Generates 2 Bloodlust stacks. Generates 9% Adrenaline.',
 		membersOnly: false,
 		iconPath: '/ability-icons/rend.png',
-		weapons: null
+		weapons: null,
+		verified: true,
+		damagesOnTick: [0],
+		hitProfile: { kind: 'single' },
 	},
 	{
 		name: 'Fury',
@@ -366,6 +381,18 @@ export const abilities: Ability[] = [
 		hitProfile: { kind: 'single' },
 		buffProfile: null,
 		buffExtension: null,
+		emits: [
+			{
+				buffName: 'Greater Fury',
+				subject: 'player',
+				trigger: 'self',
+				durationTicks: 25,
+				consumedBy: {
+					effect: { operation: 'multiply', value: 1.5 },
+					appliesToHits: 'all'
+				}
+			}
+		],
 		verified: true
 	},
 	{

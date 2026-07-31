@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { abilities } from '../data/abilities';
-import { resolveAspect, type ModifierContext } from './modifiers';
+import { resolveAspect, type BuffEmission, type ModifierContext } from './modifiers';
 import {
 	abilityDamageForPlacement,
 	applyVestmentsBerserkExtension,
@@ -52,6 +52,7 @@ import {
 	resolveChannels,
 	resolveDamagePercent,
 	resolveChaosRoarBuffs,
+	resolveEmittedBuffs,
 	resolveEndlessAssaultBleeds,
 	resolveGreaterFuryBuffs,
 	resolveHavocBuffs,
@@ -1957,6 +1958,129 @@ describe('resolveGreaterFuryBuffs', () => {
 			NEUTRAL_GEAR
 		);
 		expect(critPlacementIds.size).toBe(0);
+	});
+});
+
+describe('resolveEmittedBuffs (generic engine, driven by Greater Fury.emits)', () => {
+	const ctx: ModifierContext = {
+		combatStyle: 'melee',
+		ringOfVigourActive: false,
+		furyOfTheSmallActive: false,
+		setPieceCounts: {},
+		hasMeleeWeaponEquipped: false
+	};
+
+	it('starts a 25-tick buff on cast, consumed by the next damaging placement -- matches resolveGreaterFuryBuffs', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'gf', abilityName: greaterFury.name, startTick: 0 },
+			{ id: 'hit', abilityName: rend.name, startTick: 10 }
+		];
+		const { buffs, consumptions } = resolveEmittedBuffs(
+			placements,
+			abilities,
+			GREATER_FURY_DURATION_TICKS + 5,
+			NEUTRAL_GEAR,
+			ctx
+		);
+		expect(buffs).toHaveLength(1);
+		expect(buffs[0].abilityName).toBe('Greater Fury');
+		expect(buffs[0].startTick).toBe(0);
+		expect(buffs[0].endTick).toBe(10);
+		expect(consumptions).toHaveLength(1);
+		expect(consumptions[0].placementId).toBe('hit');
+		expect(consumptions[0].buffName).toBe('Greater Fury');
+		expect(consumptions[0].effect).toEqual({ operation: 'multiply', value: GREATER_FURY_CRIT_MULTIPLIER });
+		expect(consumptions[0].appliesToHits).toBe('all');
+	});
+
+	it('is not consumed by a non-damaging placement (e.g. Surge)', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'gf', abilityName: greaterFury.name, startTick: 0 },
+			{ id: 'surge', abilityName: surge.name, startTick: 5 },
+			{ id: 'hit', abilityName: rend.name, startTick: 10 }
+		];
+		const { buffs, consumptions } = resolveEmittedBuffs(
+			placements,
+			abilities,
+			GREATER_FURY_DURATION_TICKS + 5,
+			NEUTRAL_GEAR,
+			ctx
+		);
+		expect(buffs[0].endTick).toBe(10);
+		expect(consumptions.map((c) => c.placementId)).toEqual(['hit']);
+	});
+
+	it('expires naturally after 25 ticks if never consumed', () => {
+		const placements: TimelinePlacement[] = [{ id: 'gf', abilityName: greaterFury.name, startTick: 0 }];
+		const { buffs, consumptions } = resolveEmittedBuffs(
+			placements,
+			abilities,
+			GREATER_FURY_DURATION_TICKS + 5,
+			NEUTRAL_GEAR,
+			ctx
+		);
+		expect(buffs[0].endTick).toBe(GREATER_FURY_DURATION_TICKS);
+		expect(consumptions).toHaveLength(0);
+	});
+
+	it('does not consume a damaging placement landing after the buff already expired', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'gf', abilityName: greaterFury.name, startTick: 0 },
+			{ id: 'hit', abilityName: rend.name, startTick: GREATER_FURY_DURATION_TICKS + 2 }
+		];
+		const { consumptions } = resolveEmittedBuffs(
+			placements,
+			abilities,
+			GREATER_FURY_DURATION_TICKS + 5,
+			NEUTRAL_GEAR,
+			ctx
+		);
+		expect(consumptions).toHaveLength(0);
+	});
+
+	it('recasting Greater Fury while its own buff is still active consumes it instead of restarting -- Greater Fury is itself a damaging Basic, so this matches resolveGreaterFuryBuffs exactly (consumption is checked before the trigger)', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'gf1', abilityName: greaterFury.name, startTick: 0 },
+			{ id: 'gf2', abilityName: greaterFury.name, startTick: 5 }
+		];
+		const { buffs, consumptions } = resolveEmittedBuffs(
+			placements,
+			abilities,
+			GREATER_FURY_DURATION_TICKS + 10,
+			NEUTRAL_GEAR,
+			ctx
+		);
+		expect(buffs).toHaveLength(1);
+		expect(buffs[0].startTick).toBe(0);
+		expect(buffs[0].endTick).toBe(5);
+		expect(consumptions).toHaveLength(1);
+		expect(consumptions[0].placementId).toBe('gf2');
+	});
+
+	it('recasting while still active restarts the window from the later cast for a NON-damaging self-trigger (Chaos Roar-shaped emission on a non-damaging stand-in ability)', () => {
+		// Greater Fury itself deals damage, so it can't exercise the 'restart' branch (its own
+		// recast is always treated as the consuming hit -- see the test above). Surge has no
+		// `emits` of its own; attach a throwaway non-damaging-trigger emission to prove
+		// resolveEmittedBuffs' 'restart' path (used by e.g. Berserk) independently of Greater
+		// Fury's specific damaging-self-trigger shape.
+		const nonDamagingEmission: BuffEmission = {
+			buffName: 'Test Restart Buff',
+			subject: 'player',
+			trigger: { category: (a) => a.name === 'Surge' },
+			durationTicks: 20
+		};
+		const placements: TimelinePlacement[] = [
+			{ id: 's1', abilityName: surge.name, startTick: 0 },
+			{ id: 's2', abilityName: surge.name, startTick: 5 }
+		];
+		const { buffs } = resolveEmittedBuffs(placements, abilities, 30, NEUTRAL_GEAR, ctx, [
+			nonDamagingEmission
+		]);
+		expect(buffs).toHaveLength(2);
+		expect(buffs[0].startTick).toBe(0);
+		expect(buffs[0].endTick).toBe(5); // ended early by the recast
+		expect(buffs[1].startTick).toBe(5);
+		expect(buffs[1].endTick).toBe(25);
 	});
 });
 

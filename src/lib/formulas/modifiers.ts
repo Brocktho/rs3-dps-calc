@@ -105,6 +105,85 @@ export interface ModifierContext {
 	hasMeleeWeaponEquipped: boolean;
 }
 
+/**
+ * Declarative description of a buff/debuff an ability (or gear) can cause to exist on the
+ * timeline -- the data-driven replacement for a bespoke per-effect resolver (resolveGreaterFuryBuffs,
+ * resolveChaosRoarBuffs, resolveHavocBuffs, resolveEndlessAssaultBleeds, ...). One generic engine
+ * (resolveEmittedBuffs in timeline.ts) reads a list of these off every ability and produces
+ * ResolvedBuff windows plus the set of placements that triggered/consumed one -- no per-ability
+ * code required for a NEW ability whose behavior fits an already-covered shape (e.g. any future
+ * "starts on cast, consumed by next damaging hit, grants a damage multiplier" ability is just a
+ * data entry, not a new resolver).
+ *
+ * Ownership: an emission is declared on whatever actually causes it. Greater Fury/Chaos Roar/
+ * Berserk declare their own self-buff directly on their own Ability entry (`trigger: 'self'`).
+ * Havoc is NOT owned by any one ability -- it's declared on the Vestments of havoc set's data
+ * (armour.ts) instead, with `trigger: { category }` matching "any melee ultimate" and a
+ * `gearCondition` requiring 2+ pieces -- since the set, not the ability, is what actually grants
+ * it. Gloves of Passage similarly declares its emission on the glove ITEM's data, triggered by
+ * Rend specifically, gated on that one item being equipped.
+ */
+export interface BuffEmission {
+	/** The buff/debuff's own display name, e.g. "Havoc", "Greater Fury", "Enduring Ruin",
+	 *  "Corrupted Wounds" -- distinct from whatever ability/item declares the emission (mirrors
+	 *  ResolvedBuff.abilityName, which for an emitted buff is this name, not the trigger's name). */
+	buffName: string;
+	subject: ModifierSubject;
+	/** What starts (or re-triggers) this buff:
+	 *  - 'self': the ability THIS emission is declared on being cast (Greater Fury, Chaos Roar,
+	 *    Berserk, Gloves of Passage's Rend hit).
+	 *  - { category }: any ability matching a predicate, for emissions not owned by one specific
+	 *    ability (Havoc: any melee ultimate). */
+	trigger: 'self' | { category: (ability: Ability) => boolean };
+	/** Only fires the emission on a placement that actually deals damage (Gloves of Passage: only
+	 *  a successful hit from Rend applies Enduring Ruin) -- distinct from the trigger ability/
+	 *  category match itself, since e.g. a non-damaging use wouldn't count as a "successful hit."
+	 *  Defaults to false (every trigger match fires, matching self-buffs like Berserk that apply
+	 *  unconditionally on cast). */
+	requiresDamagingHit?: boolean;
+	/** Extra static gate evaluated once per resolution, not per placement -- e.g. Havoc/Gloves of
+	 *  Passage's 2+ Vestments pieces or the specific glove item equipped. Absent means "always
+	 *  eligible" (every self-triggered ability buff so far has no gear gate). */
+	gearCondition?: (ctx: ModifierContext) => boolean;
+	durationTicks: number;
+	/**
+	 * What happens if the trigger fires again while an instance from this SAME emission is still
+	 * active. Defaults to 'restart' (every ordinary self-buff: recasting just begins a fresh
+	 * window from the later cast, replacing the old one -- Berserk's own behavior).
+	 *  - 'restart': end the old instance right now, start a brand new full-duration one.
+	 *  - 'burst': end the old instance right now WITHOUT starting a new one, and apply
+	 *    `reTriggerEffect` once instead (Havoc: re-triggering while active grants an instant
+	 *    adrenaline burst and ends the regen window early, rather than stacking or restarting).
+	 */
+	reTriggerBehavior?: 'restart' | 'burst';
+	/** Required when `reTriggerBehavior: 'burst'` -- the one-off effect applied at the moment of
+	 *  the burst (e.g. Havoc's instant +20% adrenaline). Ignored otherwise. */
+	reTriggerEffect?: NumericEffect & { resourceId: string };
+	/**
+	 * If set, the buff is also consumed early -- ended at that placement's tick, with `effect`
+	 * applied to just that one placement -- the moment a placement matching `consumedBy` occurs
+	 * while it's active. `durationTicks` still acts as the max lifetime/timeout if nothing
+	 * consumes it first (Greater Fury/Chaos Roar: 25/12-tick timeout; Gloves of Passage's Enduring
+	 * Ruin: 10-tick timeout). Absent means the buff only ever ends via its own durationTicks
+	 * timeout or a 'restart'/'burst' re-trigger (Berserk, Havoc's steady state, Corrupted Wounds).
+	 */
+	consumedBy?: {
+		/** Defaults to "any placement dealing damage" (abilityDealsDamage) -- the shape every
+		 *  existing consume-on-next-hit buff (Greater Fury, Chaos Roar, Gloves of Passage) uses.
+		 *  Override only for a consumption rule that isn't simply "the next damaging hit". */
+		matches?: (ability: Ability) => boolean;
+		/** The damage multiplier or resource effect applied to the ONE consuming placement, e.g.
+		 *  Greater Fury's 1.5x crit, Chaos Roar's 1.75x, Gloves of Passage's +10% next attack. */
+		effect: NumericEffect;
+		/** Whether `effect` applies to every hit of a multi-hit consuming placement (Greater Fury:
+		 *  the whole channel's pre-split total is boosted, per the wiki) or only the first landed
+		 *  hit (Chaos Roar: "next STRIKE" -- a single hit, even out of a channel -- see
+		 *  parseHitProfile.isBleed for the one exception: a genuine bleed's hits are all still that
+		 *  one strike, so they all count). Defaults to 'all'. */
+		appliesToHits?: 'all' | 'first';
+	};
+}
+
 function isResourceModifierActive(
 	modifier: Modifier,
 	tick: number,

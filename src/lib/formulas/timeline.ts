@@ -3,7 +3,14 @@
  */
 import type { Ability } from '../data/abilities';
 import type { CombatStyle } from './abilityDamage';
-import type { BuffWindowModifier, Modifier, ModifierContext, PassiveModifier } from './modifiers';
+import type {
+	BuffEmission,
+	BuffWindowModifier,
+	Modifier,
+	ModifierContext,
+	NumericEffect,
+	PassiveModifier
+} from './modifiers';
 import { resolveResource, type ResourceDefinition, type ResourceState } from './resources';
 
 export const TICK_SECONDS = 0.6;
@@ -737,6 +744,140 @@ export function resolveGreaterFuryBuffs(
 	}
 
 	return { buffs, critPlacementIds };
+}
+
+/** One placement that consumed an emitted buff's `consumedBy` clause -- the generic analogue of
+ *  resolveGreaterFuryBuffs' `critPlacementIds`, generalized to carry the consuming emission's own
+ *  effect/appliesToHits instead of a hardcoded 1.5x. `damageByTick` reads this the same way it
+ *  already reads `critPlacementIds`/`bonusPlacementIds`, just keyed by buffName so multiple
+ *  different emissions' consumptions can coexist in one pass. */
+export interface EmittedBuffConsumption {
+	placementId: string;
+	buffName: string;
+	effect: NumericEffect;
+	appliesToHits: 'all' | 'first';
+}
+
+/**
+ * The generic engine every BuffEmission is interpreted by -- the data-driven replacement for a
+ * bespoke per-effect resolver (resolveGreaterFuryBuffs, resolveChaosRoarBuffs, ...): reads every
+ * `ability.emits` entry off every ability in `abilities` (plus any extra emissions supplied by
+ * `extraEmissions`, for ones owned by gear/sets rather than an ability -- see BuffEmission's doc
+ * comment on Havoc/Gloves of Passage), and produces the same ResolvedBuff[] shape every other
+ * buff in this app renders through (packIntoLanes, the Timeline buff lane, resolveAspect via
+ * BuffWindowModifier, ...).
+ *
+ * One instance is tracked per DISTINCT buffName at a time (matching how every existing bespoke
+ * resolver already behaves: Greater Fury, Chaos Roar, Berserk, Havoc are each a single outstanding
+ * window, never stacked). `trigger: 'self'` matches a placement whose OWN ability declared this
+ * emission; `trigger: { category }` matches any placement whose ability satisfies the predicate,
+ * regardless of which ability's `emits` list the entry came from -- letting Havoc's entry (declared
+ * on the Vestments of havoc set, supplied via `extraEmissions`) fire off Overpower, Massacre, or
+ * any other melee ultimate alike.
+ */
+export function resolveEmittedBuffs(
+	placements: TimelinePlacement[],
+	abilities: Ability[],
+	timelineLength: number,
+	gear: GearContext,
+	ctx: ModifierContext,
+	extraEmissions: readonly BuffEmission[] = []
+): { buffs: ResolvedBuff[]; consumptions: EmittedBuffConsumption[] } {
+	const buffs: ResolvedBuff[] = [];
+	const consumptions: EmittedBuffConsumption[] = [];
+
+	const sorted = [...placements].sort((a, b) => a.startTick - b.startTick);
+
+	// Every emission declared anywhere (any ability's `emits`, plus category/set-owned ones
+	// supplied via `extraEmissions`) that could possibly be relevant to THIS resolution -- computed
+	// once up front, since consumption has to be checked against every currently-active emission on
+	// every placement, not just the emissions the current placement's own ability happens to
+	// declare (a Greater Fury buff started by casting Greater Fury is consumed by a LATER placement
+	// -- e.g. Rend -- whose own `emits` list has nothing to do with Greater Fury at all).
+	const allEmissions: BuffEmission[] = [...extraEmissions];
+	for (const a of abilities) {
+		if (a.emits) allEmissions.push(...a.emits);
+	}
+
+	// One active-instance slot + instance counter per distinct buffName, so Greater Fury and Havoc
+	// (say) don't interfere with each other's "one outstanding instance" bookkeeping.
+	const activeByName = new Map<string, ResolvedBuff | null>();
+	const instanceCounterByName = new Map<string, number>();
+
+	for (const placement of sorted) {
+		const ability = placementAbility(placement, abilities);
+		if (!ability) continue;
+
+		for (const emission of allEmissions) {
+			const active = activeByName.get(emission.buffName) ?? null;
+
+			// Consumption check first: an already-active instance of THIS emission's buff ends the
+			// moment a matching placement lands, regardless of whether that same placement is also
+			// what re-triggers a fresh instance (mirrors every existing bespoke resolver: the
+			// consuming hit and a subsequent re-cast are mutually exclusive per placement anyway,
+			// since a damaging attack and a self-cast utility are never the same ability here).
+			if (active && placement.startTick < active.endTick && emission.consumedBy) {
+				const matches = emission.consumedBy.matches ?? ((a: Ability) => abilityDealsDamage(a, gear));
+				if (matches(ability)) {
+					consumptions.push({
+						placementId: placement.id,
+						buffName: emission.buffName,
+						effect: emission.consumedBy.effect,
+						appliesToHits: emission.consumedBy.appliesToHits ?? 'all'
+					});
+					active.endTick = placement.startTick;
+					activeByName.set(emission.buffName, null);
+					continue;
+				}
+			}
+
+			// Trigger check: does THIS placement start/re-trigger this emission at all? 'self' only
+			// matches a placement whose OWN ability declared this exact emission object (reference
+			// equality against its own `emits` array is safe -- allEmissions was built by spreading,
+			// not cloning, so the object identity is preserved).
+			const triggerMatches =
+				emission.trigger === 'self'
+					? ability.emits?.includes(emission) === true
+					: emission.trigger.category(ability);
+			if (!triggerMatches) continue;
+			if (emission.requiresDamagingHit && !abilityDealsDamage(ability, gear)) continue;
+			if (emission.gearCondition && !emission.gearCondition(ctx)) continue;
+
+			const stillActive = active && placement.startTick < active.endTick;
+			if (stillActive) {
+				if (emission.reTriggerBehavior === 'burst') {
+					if (emission.reTriggerEffect) {
+						consumptions.push({
+							placementId: placement.id,
+							buffName: emission.buffName,
+							effect: emission.reTriggerEffect,
+							appliesToHits: 'all'
+						});
+					}
+					active!.endTick = placement.startTick;
+					activeByName.set(emission.buffName, null);
+					continue; // 'burst' never starts a new instance on the same trigger
+				}
+				// 'restart' (default): fall through and start a fresh instance below, ending the old
+				// one right at this tick, same as every existing self-buff re-cast in this app.
+				active!.endTick = placement.startTick;
+			}
+
+			const counter = (instanceCounterByName.get(emission.buffName) ?? 0) + 1;
+			instanceCounterByName.set(emission.buffName, counter);
+			const fresh: ResolvedBuff = {
+				placementId: `${emission.buffName}-${counter}`,
+				abilityName: emission.buffName,
+				startTick: placement.startTick,
+				endTick: Math.min(placement.startTick + emission.durationTicks, timelineLength),
+				extensions: []
+			};
+			buffs.push(fresh);
+			activeByName.set(emission.buffName, fresh);
+		}
+	}
+
+	return { buffs, consumptions };
 }
 
 export const GREATER_BARGE_BLEED_WINDOW_TICKS = 10; // 6s Endless Assault window
