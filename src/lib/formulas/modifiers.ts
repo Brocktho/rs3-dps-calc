@@ -106,8 +106,8 @@ export interface ModifierContext {
 }
 
 /**
- * Declarative description of a buff/debuff an ability (or gear) can cause to exist on the
- * timeline -- the data-driven replacement for a bespoke per-effect resolver (resolveGreaterFuryBuffs,
+ * Declarative description of a buff/debuff an ability can cause to exist on the timeline -- the
+ * data-driven replacement for a bespoke per-effect resolver (resolveGreaterFuryBuffs,
  * resolveChaosRoarBuffs, resolveHavocBuffs, resolveEndlessAssaultBleeds, ...). One generic engine
  * (resolveEmittedBuffs in timeline.ts) reads a list of these off every ability and produces
  * ResolvedBuff windows plus the set of placements that triggered/consumed one -- no per-ability
@@ -115,26 +115,28 @@ export interface ModifierContext {
  * "starts on cast, consumed by next damaging hit, grants a damage multiplier" ability is just a
  * data entry, not a new resolver).
  *
- * Ownership: an emission is declared on whatever actually causes it. Greater Fury/Chaos Roar/
- * Berserk declare their own self-buff directly on their own Ability entry (`trigger: 'self'`).
- * Havoc is NOT owned by any one ability -- it's declared on the Vestments of havoc set's data
- * (armour.ts) instead, with `trigger: { category }` matching "any melee ultimate" and a
- * `gearCondition` requiring 2+ pieces -- since the set, not the ability, is what actually grants
- * it. Gloves of Passage similarly declares its emission on the glove ITEM's data, triggered by
- * Rend specifically, gated on that one item being equipped.
+ * An emission is declared on whatever ability actually causes it, in that ability's own
+ * `emits: BuffEmission[]` -- `trigger: 'self'` always means "the ability this emission is
+ * declared on was just cast/landed a hit." Greater Fury/Chaos Roar/Berserk each declare their own
+ * self-buff directly. An emission not owned by any single ability -- Havoc (any melee Ultimate +
+ * 2pc Vestments of havoc), or Gloves of Passage's item-conditional effects on Rend -- is handled
+ * by attaching the SAME emission object (shared reference, not a copy) to every ability it
+ * applies to: e.g. one `HAVOC_EMISSION` constant referenced from Overpower.emits, Pulverise.emits,
+ * Berserk.emits, and Meteor Strike.emits alike, gated additionally by `gearCondition`. There is no
+ * runtime "any ability matching a predicate" trigger -- which abilities an emission applies to is
+ * decided by which abilities' data reference it, not by a function evaluated per placement.
  */
 export interface BuffEmission {
 	/** The buff/debuff's own display name, e.g. "Havoc", "Greater Fury", "Enduring Ruin",
-	 *  "Corrupted Wounds" -- distinct from whatever ability/item declares the emission (mirrors
+	 *  "Corrupted Wounds" -- distinct from whatever ability declares the emission (mirrors
 	 *  ResolvedBuff.abilityName, which for an emitted buff is this name, not the trigger's name). */
 	buffName: string;
 	subject: ModifierSubject;
-	/** What starts (or re-triggers) this buff:
-	 *  - 'self': the ability THIS emission is declared on being cast (Greater Fury, Chaos Roar,
-	 *    Berserk, Gloves of Passage's Rend hit).
-	 *  - { category }: any ability matching a predicate, for emissions not owned by one specific
-	 *    ability (Havoc: any melee ultimate). */
-	trigger: 'self' | { category: (ability: Ability) => boolean };
+	/** Always 'self': the ability THIS emission is declared on being cast (or landing a hit, with
+	 *  `requiresDamagingHit`) starts/re-triggers it. For an emission shared across several
+	 *  abilities (Havoc, Gloves of Passage), the same BuffEmission object is referenced from each
+	 *  of those abilities' own `emits` arrays -- see the class doc comment above. */
+	trigger: 'self';
 	/** Only fires the emission on a placement that actually deals damage (Gloves of Passage: only
 	 *  a successful hit from Rend applies Enduring Ruin) -- distinct from the trigger ability/
 	 *  category match itself, since e.g. a non-damaging use wouldn't count as a "successful hit."

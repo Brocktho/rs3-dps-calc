@@ -559,10 +559,47 @@ export const HAVOC_INSTANT_BURST_PERCENT = 20;
 
 /** True for a melee Ultimate ability -- the trigger condition for the Vestments of havoc set's
  *  "Herald of Chaos" 2-piece bonus (any melee ultimate, not one specific named ability, unlike
- *  every other buff this app models). */
+ *  every other buff this app models). Still used to build HAVOC_EMISSION's ability list below and
+ *  by the pre-existing bespoke resolveHavocBuffs. */
 export function isMeleeUltimate(ability: Ability): boolean {
 	return ability.style === 'melee' && ability.type === 'Ultimate';
 }
+
+/**
+ * NOT YET WIRED IN -- a worked example of what Havoc looks like as a real `BuffEmission` value,
+ * for review before every melee Ultimate's own Ability entry actually references it via `emits`
+ * and resolveEmittedBuffs replaces resolveHavocBuffs below. This is the literal object the engine
+ * would consume; nothing reads it yet.
+ *
+ * Havoc isn't owned by one specific ability, but `BuffEmission.trigger` is always 'self' -- there
+ * is no "any ability matching a predicate" runtime trigger. Instead, this ONE object (shared
+ * reference, not copied) would be pushed onto the `emits` array of every melee Ultimate ability's
+ * own Ability entry (Overpower, Pulverise, Berserk, Meteor Strike -- see `isMeleeUltimate`), so
+ * `resolveEmittedBuffs`' ordinary "did this placement's own ability declare this emission" check
+ * matches any of them alike. Which abilities carry it is a fact about the DATA (who references the
+ * object), not a function evaluated per placement.
+ */
+export const HAVOC_EMISSION: BuffEmission = {
+	buffName: 'Havoc',
+	subject: 'player',
+	trigger: 'self',
+	// Evaluated once per resolution against the player's current gear (ModifierContext), not per
+	// placement -- "at least 2 pieces of Vestments of havoc armour equipped."
+	gearCondition: (ctx) => (ctx.setPieceCounts[VESTMENTS_OF_HAVOC_SET_NAME] ?? 0) >= 2,
+	durationTicks: HAVOC_DURATION_TICKS, // 30 ticks (18s)
+	// Re-triggering (another melee ultimate cast while Havoc is already up) does NOT restart the
+	// window -- it bursts instead: end the current instance early and grant a one-off effect.
+	reTriggerBehavior: 'burst',
+	reTriggerEffect: {
+		resourceId: 'adrenaline',
+		operation: 'add',
+		value: HAVOC_INSTANT_BURST_PERCENT // flat +20% adrenaline, once, at the burst tick
+	}
+	// No `consumedBy` -- Havoc isn't ended by a damaging hit the way Greater Fury/Chaos Roar are.
+	// Its steady-state 15%-over-30-ticks regen is a separate concern, already handled by the
+	// existing HAVOC_REGEN_MODIFIER (a BuffWindowModifier reading this same buff's window) --
+	// BuffEmission only describes when the buff EXISTS, not every resource effect tied to it.
+};
 
 /** One instant adrenaline burst produced by re-triggering Havoc while it's already active (see
  *  resolveHavocBuffs) -- consumed by resolveAdrenaline via costRefundForPlacement, keyed on the
@@ -761,42 +798,43 @@ export interface EmittedBuffConsumption {
 /**
  * The generic engine every BuffEmission is interpreted by -- the data-driven replacement for a
  * bespoke per-effect resolver (resolveGreaterFuryBuffs, resolveChaosRoarBuffs, ...): reads every
- * `ability.emits` entry off every ability in `abilities` (plus any extra emissions supplied by
- * `extraEmissions`, for ones owned by gear/sets rather than an ability -- see BuffEmission's doc
- * comment on Havoc/Gloves of Passage), and produces the same ResolvedBuff[] shape every other
- * buff in this app renders through (packIntoLanes, the Timeline buff lane, resolveAspect via
- * BuffWindowModifier, ...).
+ * `ability.emits` entry off every ability in `abilities`, and produces the same ResolvedBuff[]
+ * shape every other buff in this app renders through (packIntoLanes, the Timeline buff lane,
+ * resolveAspect via BuffWindowModifier, ...).
  *
  * One instance is tracked per DISTINCT buffName at a time (matching how every existing bespoke
  * resolver already behaves: Greater Fury, Chaos Roar, Berserk, Havoc are each a single outstanding
  * window, never stacked). `trigger: 'self'` matches a placement whose OWN ability declared this
- * emission; `trigger: { category }` matches any placement whose ability satisfies the predicate,
- * regardless of which ability's `emits` list the entry came from -- letting Havoc's entry (declared
- * on the Vestments of havoc set, supplied via `extraEmissions`) fire off Overpower, Massacre, or
- * any other melee ultimate alike.
+ * emission -- an emission shared across several abilities (Havoc, Gloves of Passage) is the SAME
+ * object referenced from each of those abilities' own `emits` arrays (see BuffEmission's doc
+ * comment), so this one check naturally fires for any of them.
  */
 export function resolveEmittedBuffs(
 	placements: TimelinePlacement[],
 	abilities: Ability[],
 	timelineLength: number,
 	gear: GearContext,
-	ctx: ModifierContext,
-	extraEmissions: readonly BuffEmission[] = []
+	ctx: ModifierContext
 ): { buffs: ResolvedBuff[]; consumptions: EmittedBuffConsumption[] } {
 	const buffs: ResolvedBuff[] = [];
 	const consumptions: EmittedBuffConsumption[] = [];
 
 	const sorted = [...placements].sort((a, b) => a.startTick - b.startTick);
 
-	// Every emission declared anywhere (any ability's `emits`, plus category/set-owned ones
-	// supplied via `extraEmissions`) that could possibly be relevant to THIS resolution -- computed
-	// once up front, since consumption has to be checked against every currently-active emission on
-	// every placement, not just the emissions the current placement's own ability happens to
-	// declare (a Greater Fury buff started by casting Greater Fury is consumed by a LATER placement
-	// -- e.g. Rend -- whose own `emits` list has nothing to do with Greater Fury at all).
-	const allEmissions: BuffEmission[] = [...extraEmissions];
+	// Every DISTINCT emission declared on any ability, computed once up front -- consumption has to
+	// be checked against every currently-active emission on every placement, not just the emissions
+	// the current placement's own ability happens to declare (a Greater Fury buff started by
+	// casting Greater Fury is consumed by a LATER placement -- e.g. Rend -- whose own `emits` list
+	// has nothing to do with Greater Fury at all). Deduplicated by object identity: an emission
+	// shared across several abilities (Havoc referenced from every melee ultimate's own `emits`)
+	// would otherwise appear once per ability that references it, and get processed redundantly
+	// that many times per placement.
+	const allEmissions: BuffEmission[] = [];
 	for (const a of abilities) {
-		if (a.emits) allEmissions.push(...a.emits);
+		if (!a.emits) continue;
+		for (const emission of a.emits) {
+			if (!allEmissions.includes(emission)) allEmissions.push(emission);
+		}
 	}
 
 	// One active-instance slot + instance counter per distinct buffName, so Greater Fury and Havoc
@@ -831,15 +869,13 @@ export function resolveEmittedBuffs(
 				}
 			}
 
-			// Trigger check: does THIS placement start/re-trigger this emission at all? 'self' only
-			// matches a placement whose OWN ability declared this exact emission object (reference
-			// equality against its own `emits` array is safe -- allEmissions was built by spreading,
-			// not cloning, so the object identity is preserved).
-			const triggerMatches =
-				emission.trigger === 'self'
-					? ability.emits?.includes(emission) === true
-					: emission.trigger.category(ability);
-			if (!triggerMatches) continue;
+			// Trigger check: does THIS placement start/re-trigger this emission at all? Matches a
+			// placement whose OWN ability declared this exact emission object (reference equality
+			// against its own `emits` array is safe -- allEmissions was built by spreading, not
+			// cloning, so the object identity is preserved). An emission shared across several
+			// abilities (Havoc, Gloves of Passage) is referenced from each of THEIR `emits` arrays,
+			// so this same check naturally matches any of them.
+			if (ability.emits?.includes(emission) !== true) continue;
 			if (emission.requiresDamagingHit && !abilityDealsDamage(ability, gear)) continue;
 			if (emission.gearCondition && !emission.gearCondition(ctx)) continue;
 

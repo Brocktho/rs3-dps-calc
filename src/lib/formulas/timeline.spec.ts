@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { abilities } from '../data/abilities';
+import { abilities, type Ability } from '../data/abilities';
 import { resolveAspect, type BuffEmission, type ModifierContext } from './modifiers';
 import {
 	abilityDamageForPlacement,
@@ -23,6 +23,7 @@ import {
 	GREATER_BARGE_BLEED_WINDOW_TICKS,
 	GREATER_BARGE_OUT_OF_COMBAT_TICKS,
 	GREATER_FURY_CRIT_MULTIPLIER,
+	HAVOC_EMISSION,
 	GREATER_FURY_DURATION_TICKS,
 	groupBuffExtensions,
 	HAVOC_INSTANT_BURST_PERCENT,
@@ -1664,6 +1665,83 @@ describe('resolveHavocBuffs (Vestments of havoc set effect)', () => {
 	});
 });
 
+describe('resolveEmittedBuffs (generic engine, driven by HAVOC_EMISSION)', () => {
+	const noPieces: ModifierContext = {
+		combatStyle: 'melee',
+		ringOfVigourActive: false,
+		furyOfTheSmallActive: false,
+		setPieceCounts: {},
+		hasMeleeWeaponEquipped: true
+	};
+	const twoPieces: ModifierContext = {
+		...noPieces,
+		setPieceCounts: { [VESTMENTS_OF_HAVOC_SET_NAME]: 2 }
+	};
+
+	// HAVOC_EMISSION.trigger is 'self' -- it applies to Overpower/Berserk/etc. only because THEIR
+	// OWN `emits` array references the same object, not because of a runtime category check (see
+	// HAVOC_EMISSION's doc comment in timeline.ts). Build a local copy of `abilities` with that
+	// wiring applied to every melee ultimate, rather than mutating the shared, real `abilities`
+	// array (which every other test in this file also reads).
+	const abilitiesWithHavoc = abilities.map((a) =>
+		isMeleeUltimate(a) ? { ...a, emits: [...(a.emits ?? []), HAVOC_EMISSION] } : a
+	);
+
+	it('produces no buff at all with fewer than 2 pieces equipped -- matches resolveHavocBuffs', () => {
+		const placements: TimelinePlacement[] = [{ id: 'a', abilityName: overpower.name, startTick: 0 }];
+		const { buffs } = resolveEmittedBuffs(placements, abilitiesWithHavoc, 40, NEUTRAL_GEAR, noPieces);
+		expect(buffs).toEqual([]);
+	});
+
+	it('starts a 30-tick Havoc buff when a melee ultimate is cast with 2+ pieces equipped', () => {
+		const placements: TimelinePlacement[] = [{ id: 'a', abilityName: overpower.name, startTick: 5 }];
+		const { buffs, consumptions } = resolveEmittedBuffs(placements, abilitiesWithHavoc, 40, NEUTRAL_GEAR, twoPieces);
+		expect(buffs).toHaveLength(1);
+		expect(buffs[0].abilityName).toBe('Havoc');
+		expect(buffs[0].startTick).toBe(5);
+		expect(buffs[0].endTick).toBe(35);
+		expect(consumptions).toEqual([]);
+	});
+
+	it('does not react to a non-ultimate or non-melee placement', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'a', abilityName: rend.name, startTick: 0 },
+			{ id: 'b', abilityName: deadshot.name, startTick: 5 }
+		];
+		const { buffs } = resolveEmittedBuffs(placements, abilitiesWithHavoc, 40, NEUTRAL_GEAR, twoPieces);
+		expect(buffs).toEqual([]);
+	});
+
+	it('re-triggering a melee ultimate while Havoc is active ends the window early and grants an instant burst instead of stacking a second buff', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'first', abilityName: overpower.name, startTick: 0 },
+			{ id: 'second', abilityName: berserk.name, startTick: 10 } // well within the 30-tick window
+		];
+		const { buffs, consumptions } = resolveEmittedBuffs(placements, abilitiesWithHavoc, 40, NEUTRAL_GEAR, twoPieces);
+		expect(buffs).toHaveLength(1);
+		expect(buffs[0].startTick).toBe(0);
+		expect(buffs[0].endTick).toBe(10); // truncated at the re-trigger tick, not 30
+		expect(consumptions).toHaveLength(1);
+		expect(consumptions[0]).toEqual({
+			placementId: 'second',
+			buffName: 'Havoc',
+			effect: { resourceId: 'adrenaline', operation: 'add', value: HAVOC_INSTANT_BURST_PERCENT },
+			appliesToHits: 'all'
+		});
+	});
+
+	it('a melee ultimate cast AFTER Havoc has naturally expired starts a fresh window, not a burst', () => {
+		const placements: TimelinePlacement[] = [
+			{ id: 'first', abilityName: overpower.name, startTick: 0 },
+			{ id: 'second', abilityName: berserk.name, startTick: 30 } // exactly at/after endTick
+		];
+		const { buffs, consumptions } = resolveEmittedBuffs(placements, abilitiesWithHavoc, 70, NEUTRAL_GEAR, twoPieces);
+		expect(buffs).toHaveLength(2);
+		expect(buffs[1].startTick).toBe(30);
+		expect(consumptions).toEqual([]);
+	});
+});
+
 describe('applyVestmentsBerserkExtension (3-piece bonus)', () => {
 	it('extends Berserk by 10 ticks with 3+ pieces equipped', () => {
 		const buffs = [
@@ -2057,25 +2135,24 @@ describe('resolveEmittedBuffs (generic engine, driven by Greater Fury.emits)', (
 		expect(consumptions[0].placementId).toBe('gf2');
 	});
 
-	it('recasting while still active restarts the window from the later cast for a NON-damaging self-trigger (Chaos Roar-shaped emission on a non-damaging stand-in ability)', () => {
+	it('recasting while still active restarts the window from the later cast for a NON-damaging self-trigger (a stand-in ability, to isolate the "restart" path from Greater Fury\'s specific damaging-self-trigger shape)', () => {
 		// Greater Fury itself deals damage, so it can't exercise the 'restart' branch (its own
-		// recast is always treated as the consuming hit -- see the test above). Surge has no
-		// `emits` of its own; attach a throwaway non-damaging-trigger emission to prove
-		// resolveEmittedBuffs' 'restart' path (used by e.g. Berserk) independently of Greater
-		// Fury's specific damaging-self-trigger shape.
-		const nonDamagingEmission: BuffEmission = {
+		// recast is always treated as the consuming hit -- see the test above). A fabricated
+		// non-damaging ability with its own `emits` proves resolveEmittedBuffs' 'restart' path
+		// (used by e.g. Berserk) independently -- not mutating the real (shared) `surge` object,
+		// since that would leak into every other test using it.
+		const stubEmission: BuffEmission = {
 			buffName: 'Test Restart Buff',
 			subject: 'player',
-			trigger: { category: (a) => a.name === 'Surge' },
+			trigger: 'self',
 			durationTicks: 20
 		};
+		const stubAbility: Ability = { ...surge, name: 'Stub Restart Ability', emits: [stubEmission] };
 		const placements: TimelinePlacement[] = [
-			{ id: 's1', abilityName: surge.name, startTick: 0 },
-			{ id: 's2', abilityName: surge.name, startTick: 5 }
+			{ id: 's1', abilityName: stubAbility.name, startTick: 0 },
+			{ id: 's2', abilityName: stubAbility.name, startTick: 5 }
 		];
-		const { buffs } = resolveEmittedBuffs(placements, abilities, 30, NEUTRAL_GEAR, ctx, [
-			nonDamagingEmission
-		]);
+		const { buffs } = resolveEmittedBuffs(placements, [stubAbility], 30, NEUTRAL_GEAR, ctx);
 		expect(buffs).toHaveLength(2);
 		expect(buffs[0].startTick).toBe(0);
 		expect(buffs[0].endTick).toBe(5); // ended early by the recast
