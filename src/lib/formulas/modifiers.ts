@@ -143,9 +143,22 @@ export interface BuffEmission {
 	 *  Defaults to false (every trigger match fires, matching self-buffs like Berserk that apply
 	 *  unconditionally on cast). */
 	requiresDamagingHit?: boolean;
-	/** Extra static gate evaluated once per resolution, not per placement -- e.g. Havoc/Gloves of
-	 *  Passage's 2+ Vestments pieces or the specific glove item equipped. Absent means "always
-	 *  eligible" (every self-triggered ability buff so far has no gear gate). */
+	/**
+	 * Extra static gate evaluated once per resolution, not per placement -- e.g. Havoc's 2+
+	 * Vestments pieces, or Gloves of Passage's item check. Absent means "always eligible" (every
+	 * self-triggered ability buff so far has no gear gate).
+	 *
+	 * A compound condition (gear equipped AND a global unlock checkbox, e.g. Gloves of Passage's
+	 * enhanced-via-account-unlock variant, following the same ModifierContext boolean-flag pattern
+	 * as `ringOfVigourActive`/`furyOfTheSmallActive`) needs no new field: it's just a predicate
+	 * that reads more than one ModifierContext property. Since the enhancement can improve one
+	 * emitted buff without the other (Rend's "Enduring Ruin" self-buff and "Corrupted Wounds"
+	 * enemy debuff independently), model base and enhanced as SEPARATE BuffEmission objects with
+	 * mutually-exclusive gearConditions (base: item equipped AND NOT unlocked; enhanced: item
+	 * equipped AND unlocked) rather than one emission whose numbers scale -- so an ability can
+	 * have up to 4 emits entries for this one item (base/enhanced x Enduring Ruin/Corrupted
+	 * Wounds), each independently swapped in or out.
+	 */
 	gearCondition?: (ctx: ModifierContext) => boolean;
 	durationTicks: number;
 	/**
