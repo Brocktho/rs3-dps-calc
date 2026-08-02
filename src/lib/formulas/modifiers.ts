@@ -6,7 +6,7 @@
  * full design rationale.
  */
 import type { Ability } from '../data/abilities';
-import type { CombatStyle } from './abilityDamage';
+import type { TickContext } from './context';
 import type { ResolvedBuff } from './timeline';
 
 /** Only 'player' is produced/consumed today; the field exists so enemy-side debuffs (replacing the
@@ -51,7 +51,7 @@ interface ResourceModifierCommon {
 	/** An extra static gate on top of the kind-specific activation check -- e.g. Imbue: Shadows'
 	 *  bonus additionally requires the player's current combat style to be Ranged. Applies to any
 	 *  modifier kind, not just passives (which already have their own `isActive`). */
-	requiresContext?: (ctx: ModifierContext) => boolean;
+	requiresContext?: (ctx: TickContext) => boolean;
 	/** perTickIncome only; defaults to 1. */
 	intervalTicks?: number;
 	/**
@@ -66,10 +66,12 @@ interface ResourceModifierCommon {
 	applicationGranularity?: 'perPlacement' | 'perHit';
 }
 
-/** Always active given the player's current static state -- gear, unlocks, config toggles. */
+/** Always active given the player's state at the tick being evaluated -- gear, unlocks, config
+ *  toggles. Because the context is per-tick (see TickContext), a passive gated on gear-derived
+ *  state automatically deactivates the tick a gear change breaks its condition. */
 export interface PassiveModifier extends ResourceModifierCommon {
 	kind: 'passive';
-	isActive: (ctx: ModifierContext) => boolean;
+	isActive: (ctx: TickContext) => boolean;
 }
 
 /** Active only while a specific ability's buff window (per resolveBuffs) covers the current tick. */
@@ -90,20 +92,6 @@ export interface TriggeredModifier extends ResourceModifierCommon {
 }
 
 export type Modifier = PassiveModifier | BuffWindowModifier | TriggeredModifier;
-
-export interface ModifierContext {
-	combatStyle: CombatStyle | null;
-	ringOfVigourActive: boolean;
-	furyOfTheSmallActive: boolean;
-	/** How many pieces of each armour set (keyed by Armour.setName, e.g. "Vestments of havoc
-	 *  armour") are currently equipped -- generalizes across every set-effect armour, not just
-	 *  Vestments, so a new set only needs new Modifier entries gated on this count, never a new
-	 *  ModifierContext field. Absent/0 for sets with nothing equipped. */
-	setPieceCounts: Record<string, number>;
-	/** Whether the player's main-hand is currently a melee weapon -- Vestments of havoc's 4-piece
-	 *  bonus (+20% max adrenaline) is conditioned on this, not just the armour itself. */
-	hasMeleeWeaponEquipped: boolean;
-}
 
 /**
  * Declarative description of a buff/debuff an ability can cause to exist on the timeline -- the
@@ -149,9 +137,10 @@ export interface BuffEmission {
 	 * self-triggered ability buff so far has no gear gate).
 	 *
 	 * A compound condition (gear equipped AND a global unlock checkbox, e.g. Gloves of Passage's
-	 * enhanced-via-account-unlock variant, following the same ModifierContext boolean-flag pattern
-	 * as `ringOfVigourActive`/`furyOfTheSmallActive`) needs no new field: it's just a predicate
-	 * that reads more than one ModifierContext property. Since the enhancement can improve one
+	 * enhanced-via-account-unlock variant, following the same GlobalContext boolean-flag pattern
+	 * as `global.ringOfVigourActive`/`global.furyOfTheSmallActive`) needs no new field: it's just
+	 * a predicate
+	 * that reads more than one TickContext property. Since the enhancement can improve one
 	 * emitted buff without the other (Rend's "Enduring Ruin" self-buff and "Corrupted Wounds"
 	 * enemy debuff independently), model base and enhanced as SEPARATE BuffEmission objects with
 	 * mutually-exclusive gearConditions (base: item equipped AND NOT unlocked; enhanced: item
@@ -159,7 +148,7 @@ export interface BuffEmission {
 	 * have up to 4 emits entries for this one item (base/enhanced x Enduring Ruin/Corrupted
 	 * Wounds), each independently swapped in or out.
 	 */
-	gearCondition?: (ctx: ModifierContext) => boolean;
+	gearCondition?: (ctx: TickContext) => boolean;
 	durationTicks: number;
 	/**
 	 * What happens if the trigger fires again while an instance from this SAME emission is still
@@ -203,7 +192,7 @@ function isResourceModifierActive(
 	modifier: Modifier,
 	tick: number,
 	buffs: ResolvedBuff[],
-	ctx: ModifierContext
+	ctx: TickContext
 ): boolean {
 	if (modifier.kind === 'passive') return modifier.isActive(ctx);
 	if (modifier.kind === 'buffWindow') {
@@ -239,7 +228,7 @@ export function resolveAspect(
 	aspect: ResourceAspectKind,
 	tick: number,
 	buffs: ResolvedBuff[],
-	ctx: ModifierContext,
+	ctx: TickContext,
 	ability?: Ability
 ): { additive: number; multiplier: number; override: number | null } {
 	let additive = 0;

@@ -32,7 +32,7 @@
 		type GearContext,
 		type TimelinePlacement
 	} from '$lib';
-	import type { ModifierContext } from '$lib/formulas/modifiers';
+	import type { TickContext } from '$lib/formulas/context';
 	import TimelineChart from './TimelineChart.svelte';
 
 	interface Props {
@@ -44,7 +44,7 @@
 		hasFuryOfTheSmall: boolean;
 		gearContext: GearContext;
 		/** How many pieces of each armour set (keyed by Armour.setName) are currently equipped --
-		 *  see ModifierContext.setPieceCounts. Drives set-effect Modifiers like Vestments of
+		 *  see TickContext.setPieceCounts. Drives set-effect Modifiers like Vestments of
 		 *  havoc's Herald of Chaos (2pc/3pc/4pc thresholds). */
 		setPieceCounts: Record<string, number>;
 		hasMeleeWeaponEquipped: boolean;
@@ -671,10 +671,13 @@
 
 	/** For a `resolve`-migrated ability's damagePercent/hitOffsets that depend on global context
 	 *  (e.g. Asphyxiate's Tumeken's-resplendence set check) -- see docs/ability-resolver-design.md. */
-	const modifierContextForDamage = $derived<ModifierContext>({
-		combatStyle,
-		ringOfVigourActive: hasRingOfVigour,
-		furyOfTheSmallActive: hasFuryOfTheSmall,
+	const tickContextForDamage = $derived<TickContext>({
+		global: {
+			combatStyle,
+			ringOfVigourActive: hasRingOfVigour,
+			furyOfTheSmallActive: hasFuryOfTheSmall
+		},
+		gear: gearContext,
 		setPieceCounts,
 		hasMeleeWeaponEquipped
 	});
@@ -702,7 +705,7 @@
 			deathsSwiftnessBuffs,
 			hitChanceByStyle,
 			enemy,
-			modifierContextForDamage
+			tickContextForDamage
 		)
 	);
 	const cumulative = $derived(cumulativeDamage(tickDamage));

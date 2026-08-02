@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { hitChance, NECROMANCY_AFFINITY, targetArmourRating } from './hitChance';
+import { DEFAULT_GLOBAL_CONTEXT, NO_GEAR_CONTEXT } from './context';
+import {
+	hitChance,
+	hitChanceBreakdown,
+	NECROMANCY_AFFINITY,
+	targetArmourRating,
+	type HitChanceAdjustment
+} from './hitChance';
 
 describe('targetArmourRating', () => {
 	it('matches the wiki\'s "Nex (AoD)" example: armour 2,765 + f(99) = 3,977', () => {
@@ -38,6 +45,74 @@ describe('hitChance', () => {
 
 	it('returns 100% when the target has no armour rating (avoids division by zero)', () => {
 		expect(hitChance(90, 5000, 0)).toBe(100);
+	});
+});
+
+describe('hitChanceBreakdown', () => {
+	const penalty = (amountPercent: number, active = true): HitChanceAdjustment => ({
+		source: { label: 'Test penalty item' },
+		amountPercent,
+		isActive: () => active
+	});
+	const breakdown = (
+		adjustments: HitChanceAdjustment[],
+		affinity = 90,
+		accuracy = 2905,
+		armour = 2202
+	) =>
+		hitChanceBreakdown(
+			affinity,
+			accuracy,
+			armour,
+			NO_GEAR_CONTEXT,
+			DEFAULT_GLOBAL_CONTEXT,
+			adjustments
+		);
+
+	it('with no adjustments, final matches the legacy hitChance() exactly', () => {
+		const result = breakdown([]);
+		expect(result.final).toBe(hitChance(90, 2905, 2202));
+		expect(result.adjustments).toEqual([]);
+		expect(result.adjusted).toBe(result.raw);
+	});
+
+	it('preserves raw UNCAPPED: 118.75% raw - 10% penalty lands at 100% final, not 90%', () => {
+		// The load-bearing over-cap ordering case (design §3): the penalty applies to the raw
+		// value BEFORE the cap, so an over-cap raw absorbs it.
+		const result = breakdown([penalty(-10)]);
+		expect(result.raw).toBeCloseTo(118.75, 1);
+		expect(result.adjusted).toBeCloseTo(108.75, 1);
+		expect(result.final).toBe(100);
+	});
+
+	it('a penalty big enough to drag adjusted under 100 shows up in final', () => {
+		const result = breakdown([penalty(-30)]);
+		expect(result.adjusted).toBeCloseTo(88.75, 1);
+		expect(result.final).toBeCloseTo(88.75, 1);
+	});
+
+	it('inactive adjustments neither apply nor appear in provenance', () => {
+		const result = breakdown([penalty(-30, false)]);
+		expect(result.adjustments).toEqual([]);
+		expect(result.final).toBe(100);
+	});
+
+	it('multiple adjustments sum additively and are each listed for provenance', () => {
+		const result = breakdown([penalty(-10), penalty(5)]);
+		expect(result.adjustments).toHaveLength(2);
+		expect(result.adjusted).toBeCloseTo(118.75 - 10 + 5, 1);
+	});
+
+	it('clamps final at 0 when penalties exceed raw', () => {
+		const result = breakdown([penalty(-80)], 45, 1000, 2202);
+		expect(result.adjusted).toBeLessThan(0);
+		expect(result.final).toBe(0);
+	});
+
+	it('armourRating <= 0 keeps the guaranteed-hit degenerate case (raw 100), adjustments still pre-cap', () => {
+		const result = breakdown([penalty(-10)], 90, 5000, 0);
+		expect(result.raw).toBe(100);
+		expect(result.final).toBe(90);
 	});
 });
 

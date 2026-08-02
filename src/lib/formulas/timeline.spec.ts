@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { abilities, type Ability } from '../data/abilities';
-import { resolveAspect, type BuffEmission, type ModifierContext } from './modifiers';
+import type { TickContext } from './context';
+import { resolveAspect, type BuffEmission } from './modifiers';
 import {
 	abilityDamageForPlacement,
 	applyVestmentsBerserkExtension,
@@ -1060,14 +1061,13 @@ describe('resolveHitOffsets / resolveDamagePercent (resolve-migrated abilities)'
 
 	it("Asphyxiate: 520% with fewer than 4 Tumeken's resplendence pieces, 624% with 4+", () => {
 		const asphyxiate = abilities.find((a) => a.name === 'Asphyxiate')!;
-		const ctxNoSet: ModifierContext = {
-			combatStyle: null,
-			ringOfVigourActive: false,
-			furyOfTheSmallActive: false,
+		const ctxNoSet: TickContext = {
+			global: { combatStyle: null, ringOfVigourActive: false, furyOfTheSmallActive: false },
+			gear: NEUTRAL_GEAR,
 			setPieceCounts: {},
 			hasMeleeWeaponEquipped: false
 		};
-		const ctxWithSet: ModifierContext = {
+		const ctxWithSet: TickContext = {
 			...ctxNoSet,
 			setPieceCounts: { "Tumeken's resplendence equipment": 4 }
 		};
@@ -1083,10 +1083,9 @@ describe('resolveHitOffsets / resolveDamagePercent (resolve-migrated abilities)'
 });
 
 describe('resolveAspect', () => {
-	const ctx: ModifierContext = {
-		combatStyle: 'ranged',
-		ringOfVigourActive: false,
-		furyOfTheSmallActive: false,
+	const ctx: TickContext = {
+		global: { combatStyle: 'ranged', ringOfVigourActive: false, furyOfTheSmallActive: false },
+		gear: NEUTRAL_GEAR,
 		setPieceCounts: {},
 		hasMeleeWeaponEquipped: false
 	};
@@ -1168,10 +1167,9 @@ describe('resolveAspect', () => {
 	});
 
 	it('does not apply the bonus to melee abilities regardless of hit/target shape (Overpower)', () => {
-		const meleeCtx: ModifierContext = {
-			combatStyle: 'melee',
-			ringOfVigourActive: false,
-			furyOfTheSmallActive: false,
+		const meleeCtx: TickContext = {
+			global: { combatStyle: 'melee', ringOfVigourActive: false, furyOfTheSmallActive: false },
+			gear: NEUTRAL_GEAR,
 			setPieceCounts: {},
 			hasMeleeWeaponEquipped: false
 		};
@@ -1188,10 +1186,9 @@ describe('resolveAspect', () => {
 	});
 
 	it('does not apply the bonus outside of Ranged', () => {
-		const meleeCtx: ModifierContext = {
-			combatStyle: 'melee',
-			ringOfVigourActive: false,
-			furyOfTheSmallActive: false,
+		const meleeCtx: TickContext = {
+			global: { combatStyle: 'melee', ringOfVigourActive: false, furyOfTheSmallActive: false },
+			gear: NEUTRAL_GEAR,
 			setPieceCounts: {},
 			hasMeleeWeaponEquipped: false
 		};
@@ -1221,10 +1218,9 @@ describe('resolveAspect', () => {
 	});
 
 	it('Ring of Vigour costRefund is +10 for an Ultimate spend when active', () => {
-		const activeCtx: ModifierContext = {
-			combatStyle: 'melee',
-			ringOfVigourActive: true,
-			furyOfTheSmallActive: false,
+		const activeCtx: TickContext = {
+			global: { combatStyle: 'melee', ringOfVigourActive: true, furyOfTheSmallActive: false },
+			gear: NEUTRAL_GEAR,
 			setPieceCounts: {},
 			hasMeleeWeaponEquipped: false
 		};
@@ -1254,9 +1250,8 @@ describe('resolveAspect', () => {
 			0,
 			[],
 			{
-				combatStyle: 'melee',
-				ringOfVigourActive: true,
-				furyOfTheSmallActive: false,
+				global: { combatStyle: 'melee', ringOfVigourActive: true, furyOfTheSmallActive: false },
+				gear: NEUTRAL_GEAR,
 				setPieceCounts: {},
 				hasMeleeWeaponEquipped: false
 			},
@@ -1266,10 +1261,9 @@ describe('resolveAspect', () => {
 	});
 
 	it('multiply-operation modifiers on the same aspect combine as a product', () => {
-		const berserkCtx: ModifierContext = {
-			combatStyle: 'melee',
-			ringOfVigourActive: false,
-			furyOfTheSmallActive: false,
+		const berserkCtx: TickContext = {
+			global: { combatStyle: 'melee', ringOfVigourActive: false, furyOfTheSmallActive: false },
+			gear: NEUTRAL_GEAR,
 			setPieceCounts: {},
 			hasMeleeWeaponEquipped: false
 		};
@@ -1303,9 +1297,8 @@ describe('resolveAspect', () => {
 			5,
 			berserkWindow,
 			{
-				combatStyle: 'melee',
-				ringOfVigourActive: false,
-				furyOfTheSmallActive: false,
+				global: { combatStyle: 'melee', ringOfVigourActive: false, furyOfTheSmallActive: false },
+				gear: NEUTRAL_GEAR,
 				setPieceCounts: {},
 				hasMeleeWeaponEquipped: false
 			}
@@ -1324,9 +1317,8 @@ describe('resolveAspect', () => {
 			15,
 			berserkWindow,
 			{
-				combatStyle: 'melee',
-				ringOfVigourActive: false,
-				furyOfTheSmallActive: false,
+				global: { combatStyle: 'melee', ringOfVigourActive: false, furyOfTheSmallActive: false },
+				gear: NEUTRAL_GEAR,
 				setPieceCounts: {},
 				hasMeleeWeaponEquipped: false
 			}
@@ -1744,14 +1736,13 @@ describe('resolveHavocBuffs (Vestments of havoc set effect)', () => {
 });
 
 describe('resolveEmittedBuffs (generic engine, driven by HAVOC_EMISSION)', () => {
-	const noPieces: ModifierContext = {
-		combatStyle: 'melee',
-		ringOfVigourActive: false,
-		furyOfTheSmallActive: false,
+	const noPieces: TickContext = {
+		global: { combatStyle: 'melee', ringOfVigourActive: false, furyOfTheSmallActive: false },
+		gear: NEUTRAL_GEAR,
 		setPieceCounts: {},
 		hasMeleeWeaponEquipped: true
 	};
-	const twoPieces: ModifierContext = {
+	const twoPieces: TickContext = {
 		...noPieces,
 		setPieceCounts: { [VESTMENTS_OF_HAVOC_SET_NAME]: 2 }
 	};
@@ -2118,10 +2109,9 @@ describe('resolveGreaterFuryBuffs', () => {
 });
 
 describe('resolveEmittedBuffs (generic engine, driven by Greater Fury.emits)', () => {
-	const ctx: ModifierContext = {
-		combatStyle: 'melee',
-		ringOfVigourActive: false,
-		furyOfTheSmallActive: false,
+	const ctx: TickContext = {
+		global: { combatStyle: 'melee', ringOfVigourActive: false, furyOfTheSmallActive: false },
+		gear: NEUTRAL_GEAR,
 		setPieceCounts: {},
 		hasMeleeWeaponEquipped: false
 	};

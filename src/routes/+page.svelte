@@ -10,7 +10,7 @@
 		calculateAbilityDamage,
 		computeDamageSeries,
 		resolveAdrenaline,
-		hitChance,
+		hitChanceBreakdown,
 		hybridNerf,
 		NECROMANCY_AFFINITY,
 		prayers,
@@ -23,6 +23,7 @@
 		type BoostableSkill,
 		type CombatStyle,
 		type GearContext,
+		type GlobalContext,
 		type Prayer,
 		type SkillBoost,
 		type Spell,
@@ -30,6 +31,14 @@
 		type Weapon,
 		type WeaponConfig
 	} from '$lib';
+	import {
+		deriveGearContext,
+		deriveHasMeleeWeaponEquipped,
+		deriveSetPieceCounts,
+		emptyLoadout,
+		type EquippedItem,
+		type GearLoadout
+	} from '$lib/formulas/gear';
 	import { onMount } from 'svelte';
 	import MonsterPanel from '$lib/components/MonsterPanel.svelte';
 	import Combobox from '$lib/components/Combobox.svelte';
@@ -909,24 +918,15 @@
 	});
 
 	const adTotal = $derived(result.value?.total ?? 0);
-	const timelineGearContext = $derived<GearContext>({
-		isTwoHanded: mainHandIsTwoHanded,
-		hasOffHandWeapon: !!offHandWeapon,
-		equippedCapeName: capeArmour?.name ?? null
-	});
-
-	// How many pieces of each armour set (by Armour.setName) are currently equipped -- generalized
-	// across every set-effect armour (Vestments of havoc today, ~10 more later), derived entirely
-	// from what's already equipped rather than a manual toggle. Feeds Timeline's set-effect
-	// Modifiers (see ModifierContext.setPieceCounts).
-	const setPieceCounts = $derived.by(() => {
-		const counts: Record<string, number> = {};
-		for (const piece of equippedArmourPieces) {
-			counts[piece.setName] = (counts[piece.setName] ?? 0) + 1;
-		}
-		return counts;
-	});
-	const hasMeleeWeaponEquipped = $derived(mainHandWeapon?.combatStyle === 'melee');
+	// Stage 1 of the resolution pipeline: the active setup's equipment as a GearLoadout value
+	// object, from which every gear-derived view below is computed via the one derivation path
+	// (deriveGearContext & co. in formulas/gear.ts) -- never assembled ad hoc. setPieceCounts
+	// generalizes across every set-effect armour (Vestments of havoc today, ~10 more later) and
+	// feeds Timeline's set-effect Modifiers (see TickContext.setPieceCounts).
+	const timelineLoadout = $derived(loadoutForSetup(activeSetup));
+	const timelineGearContext = $derived<GearContext>(deriveGearContext(timelineLoadout));
+	const setPieceCounts = $derived(deriveSetPieceCounts(timelineLoadout));
+	const hasMeleeWeaponEquipped = $derived(deriveHasMeleeWeaponEquipped(timelineLoadout));
 
 	// --- Accuracy, per https://runescape.wiki/w/Combat_Stats ---
 	// Weapon accuracy is main-hand only -- off-hand weapons don't contribute a separate
@@ -946,6 +946,17 @@
 	// --- Hit chance, per https://runescape.wiki/w/Hit_chance ---
 	const selectedBoss = $derived(bosses.find((b) => b.name === selectedBossName) ?? null);
 
+	// Frozen-for-the-whole-timeline global state (design §4) -- gates HitChanceAdjustments (and
+	// eventually every other global-unlock-conditioned effect) without reaching into UI state.
+	const globalContext = $derived<GlobalContext>({
+		combatStyle,
+		ringOfVigourActive: activeSetup.hasRingOfVigour,
+		furyOfTheSmallActive: activeSetup.hasFuryOfTheSmall
+	});
+
+	// Full raw -> adjustments -> cap breakdown (design §3): `raw` stays uncapped so pre-cap item
+	// penalties subtract from it before the single, final clamp; only `.final` may feed damage
+	// math, while the intermediate steps drive the provenance display in MonsterPanel.
 	const hitChanceValue = $derived.by(() => {
 		if (!combatStyle || totalAccuracy === null || !selectedBoss) return null;
 		const armourRating = targetArmourRating(selectedBoss.armour, selectedBoss.defenceLevel);
@@ -959,7 +970,7 @@
 					: combatStyle === 'ranged'
 						? selectedBoss.affinityRanged
 						: selectedBoss.affinityMagic;
-		return hitChance(affinity, totalAccuracy, armourRating);
+		return hitChanceBreakdown(affinity, totalAccuracy, armourRating, timelineGearContext, globalContext);
 	});
 
 	// Keyed map form of hitChanceValue for damageByTick's `hitChanceByStyle` param -- a setup only
@@ -968,7 +979,7 @@
 	// in principle be asked about any style. Empty (defaults every style to 100%, i.e. no change)
 	// until both a combat style and a target are selected.
 	const hitChanceByStyle = $derived<Partial<Record<CombatStyle, number>>>(
-		combatStyle && hitChanceValue !== null ? { [combatStyle]: hitChanceValue } : {}
+		combatStyle && hitChanceValue !== null ? { [combatStyle]: hitChanceValue.final } : {}
 	);
 
 	// --- Multi-setup damage overlay ---
@@ -1119,7 +1130,15 @@
 						? selectedBoss.affinityRanged
 						: selectedBoss.affinityMagic;
 
-		return { [style]: hitChance(affinity, totalAcc, armourRating) };
+		// Same breakdown pipeline as the active setup's hitChanceValue -- only `.final` feeds the
+		// damage series; the overlay has no provenance display, so intermediates are dropped here.
+		return {
+			[style]: hitChanceBreakdown(affinity, totalAcc, armourRating, gearContextForSetup(setup), {
+				combatStyle: style,
+				ringOfVigourActive: setup.hasRingOfVigour,
+				furyOfTheSmallActive: setup.hasFuryOfTheSmall
+			}).final
+		};
 	}
 
 	function setPieceArmourForSetup(setup: Setup): Armour[] {
@@ -1136,13 +1155,34 @@
 		].filter((piece): piece is Armour => piece !== undefined);
 	}
 
+	/**
+	 * Builds the GearLoadout (design §2, stage 1 of the resolution pipeline) from a Setup's
+	 * name-keyed slot fields -- the single place Setup state becomes the value object every
+	 * gear-derived view (GearContext, setPieceCounts, hasMeleeWeaponEquipped) is computed from.
+	 * A shield and an off-hand weapon are mutually exclusive (enforced by the equip effects
+	 * above), so both map onto the one `offHand` slot.
+	 */
+	function loadoutForSetup(setup: Setup): GearLoadout {
+		const armourItem = (name: string): EquippedItem | null =>
+			name ? { name, setName: armour.find((a) => a.name === name)?.setName ?? null } : null;
+		const plainItem = (name: string): EquippedItem | null => (name ? { name, setName: null } : null);
+		const loadout = emptyLoadout();
+		loadout.slots.head = armourItem(setup.headArmourName);
+		loadout.slots.body = armourItem(setup.torsoArmourName);
+		loadout.slots.legs = armourItem(setup.legsArmourName);
+		loadout.slots.hands = armourItem(setup.handsArmourName);
+		loadout.slots.feet = armourItem(setup.feetArmourName);
+		loadout.slots.cape = armourItem(setup.capeArmourName);
+		loadout.slots.neck = armourItem(setup.neckArmourName);
+		loadout.slots.ring = armourItem(setup.ringArmourName);
+		loadout.slots.mainHand = plainItem(setup.mainHandWeaponName);
+		loadout.slots.offHand = plainItem(setup.offHandWeaponName) ?? armourItem(setup.shieldName);
+		loadout.slots.ammo = plainItem(setup.ammoName);
+		return loadout;
+	}
+
 	function gearContextForSetup(setup: Setup): GearContext {
-		const mhWeapon = weapons.find((w) => w.name === setup.mainHandWeaponName) ?? null;
-		return {
-			isTwoHanded: mhWeapon?.slot === 'twoHanded',
-			hasOffHandWeapon: !!setup.offHandWeaponName,
-			equippedCapeName: setup.capeArmourName || null
-		};
+		return deriveGearContext(loadoutForSetup(setup));
 	}
 
 	function combatStyleForSetup(setup: Setup): CombatStyle | null {
@@ -1150,24 +1190,11 @@
 	}
 
 	function hasMeleeWeaponEquippedForSetup(setup: Setup): boolean {
-		return combatStyleForSetup(setup) === 'melee';
+		return deriveHasMeleeWeaponEquipped(loadoutForSetup(setup));
 	}
 
 	function setPieceCountsForSetup(setup: Setup): Record<string, number> {
-		const pieces = [
-			armour.find((a) => a.name === setup.headArmourName),
-			armour.find((a) => a.name === setup.torsoArmourName),
-			armour.find((a) => a.name === setup.legsArmourName),
-			armour.find((a) => a.name === setup.handsArmourName),
-			armour.find((a) => a.name === setup.feetArmourName),
-			armour.find((a) => a.name === setup.shieldName),
-			armour.find((a) => a.name === setup.capeArmourName),
-			armour.find((a) => a.name === setup.neckArmourName),
-			armour.find((a) => a.name === setup.ringArmourName)
-		].filter((piece): piece is Armour => piece !== undefined);
-		const counts: Record<string, number> = {};
-		for (const piece of pieces) counts[piece.setName] = (counts[piece.setName] ?? 0) + 1;
-		return counts;
+		return deriveSetPieceCounts(loadoutForSetup(setup));
 	}
 
 	const SETUP_LINE_COLORS = [

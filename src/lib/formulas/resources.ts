@@ -5,7 +5,8 @@
  */
 import type { Ability } from '../data/abilities';
 import type { ResolvedBuff, TimelinePlacement } from './timeline';
-import { resolveAspect, type Modifier, type ModifierContext } from './modifiers';
+import type { TickContext } from './context';
+import { resolveAspect, type Modifier } from './modifiers';
 
 export interface ResourceState {
 	value: number;
@@ -78,7 +79,7 @@ export function resolveResource(
 	abilities: Ability[],
 	modifiers: Modifier[],
 	buffs: ResolvedBuff[],
-	ctx: ModifierContext,
+	ctx: TickContext,
 	timelineLength: number
 ): ResourceState[] {
 	const result: ResourceState[] = new Array(timelineLength);

@@ -1,5 +1,9 @@
 # Ability resolver redesign
 
+> Phases 1–2 here are the first steps of the long-term architecture in
+> `resolution-pipeline-design.md` (gear buffer, set effects as modifier windows, `resolve` as the
+> sole resolution point for damage/adrenaline/cooldown/emits). Read that for the end state.
+
 ## Problem
 
 `Ability` fields today are a mix of two genuinely different things:
@@ -175,6 +179,82 @@ same pattern already established this session for `verified`/description-regex f
   `hitCountFor`'s regex/override fallback actually get deleted, as one final cleanup pass -- not as
   part of this or any single migration step.
 
-## Open question for review before implementation starts
+## Phase 1 status: DONE
 
-Confirm the 8-ability migration list above is complete/correct before implementation starts.
+Punish, Adaptive Strike, Overpower, Deadshot, Omnipower, Death Skulls, and Asphyxiate are migrated
+onto `resolve`; Ranged's dead variant collapsed to a plain string. `damageVariants`/
+`hitCountVariants`/`HitProfile`/`damagesOnTick` are untouched and still live for every
+not-yet-migrated ability, per the migration strategy above.
+
+## Phase 2: cooldown joins `resolve`
+
+> **Superseded in part:** this section keeps Overpower's Berserk-gated cooldown on
+> `CONDITIONAL_COOLDOWNS` because `resolve` couldn't see timeline state. The long-term design
+> (`resolution-pipeline-design.md` §6, rule 4) widens `resolve`'s input with a `TimelineView`
+> (`isBuffActive('Berserk')`), moves that case INSIDE `resolve`, and deletes
+> `CONDITIONAL_COOLDOWNS`. The fallback-chain plumbing described below is still accurate.
+
+`ResolvedAbility` gains a fourth field:
+
+```ts
+interface ResolvedAbility {
+	damagePercent: string | number;
+	hitOffsets: number[];
+	isBleed: boolean;
+	/** This ability's OWN cooldown, in ticks, given the current gear/enemy/global context --
+	 *  replaces `parseCooldownTicks`'s cooldownText parse + CONDITIONAL_COOLDOWNS' buff-gated
+	 *  override for a migrated ability. Covers: a flat global-unlock reduction (read a flag off
+	 *  `ctx`, same shape as `ringOfVigourActive`/`furyOfTheSmallActive`), and any other
+	 *  ability whose OWN cooldown genuinely depends on gear/enemy/ctx. Does NOT cover
+	 *  CONDITIONAL_COOLDOWNS' existing buff-gated case (Overpower's cooldown while Berserk is
+	 *  active) -- that depends on the TIMELINE (is a specific buff currently active at this
+	 *  tick), which `resolve`'s pure gear/enemy/ctx signature has no way to see. That case stays
+	 *  on `CONDITIONAL_COOLDOWNS` as-is until/unless a future phase widens `resolve`'s input to
+	 *  include timeline state -- explicitly not attempted in Phase 2.
+	 */
+	cooldownTicks: number;
+}
+```
+
+`effectiveCooldownTicks(ability, atTick, placements, abilities, timelineLength)` becomes the fourth
+resolution point (alongside `resolveDamagePercent`/`resolveHitOffsets`/`resolveIsBleed`), threading
+`gear`/`enemy`/`ctx` through the same way: `ability.resolve`'s `cooldownTicks` output, if present →
+`CONDITIONAL_COOLDOWNS`' existing buff-gated override (unchanged, still needs `placements`/
+`abilities`/`timelineLength` to check the active buff) → `parseCooldownTicks`'s cooldownText parse.
+Every caller of `effectiveCooldownTicks` (`respectsCooldown`, `clearConflictingUses`,
+`earliestAvailableTick`, `cooldownZonesFor`) already goes through this one function, so they need no
+changes themselves beyond passing `gear`/`enemy`/`ctx` through (with the same neutral defaults
+Phase 1 established) if they don't already receive them.
+
+**Explicitly out of scope for Phase 2, per the user's direction:** the "on use, retroactively
+shrink every currently-active cooldown window by N ticks" mechanism (an instantaneous, one-shot
+timeline event -- structurally NOT a per-ability contextual value, since it reaches into every
+OTHER ability's already-in-progress cooldown at one specific tick). This does not belong in
+`resolve` at all. The user's own framing: it should be "more of an emits array that gets used" --
+i.e. a sibling to `BuffEmission` on the SAME `Ability.emits` field, not a new top-level concept. A
+concrete shape isn't designed yet; when it's tackled, it needs its own resolver (analogous to
+`resolveEmittedBuffs`, but scanning/mutating other abilities' resolved cooldown windows at the
+trigger tick instead of producing `ResolvedBuff` windows) -- a separate, later design pass.
+
+## Migration list (Phase 2)
+
+Only `CONDITIONAL_COOLDOWNS`' one existing entry needs any actual data change, since it's the only
+ability with a non-static cooldown today:
+
+| Ability | Depends on | Notes |
+|---|---|---|
+| Overpower | (unchanged) `CONDITIONAL_COOLDOWNS` buff-gate | Its cooldown-while-Berserk-active case stays on `CONDITIONAL_COOLDOWNS` exactly as today (see above) -- `resolve` isn't the right place for it. Not actually migrated in Phase 2; listed here only to confirm it's deliberately excluded. |
+
+No ability currently needs `resolve`'s `cooldownTicks` for a REAL case yet (the flat
+global-unlock-reduction scenario the user described is a future unlock, not modeled in the data
+yet) -- Phase 2 is primarily engine plumbing (widening `effectiveCooldownTicks` and its resolution
+chain) proven by tests with a synthetic `resolve` function, the same way `HAVOC_EMISSION` was
+proven against `resolveHavocBuffs`' test cases before anything in the real data used it.
+
+## Open questions for review before implementation starts
+
+1. Confirm Phase 2's scope above: only the engine change (widen `effectiveCooldownTicks`'s
+   resolution chain to check `resolve` first) plus proof-of-concept tests -- no real ability's data
+   changes, since no real global-unlock-cooldown-reduction ability exists in the data yet.
+2. Confirm the cross-ability "instant burst, shrink all active cooldowns" mechanism stays fully
+   out of scope for this phase, to be designed separately later as an `emits`-sibling concept.

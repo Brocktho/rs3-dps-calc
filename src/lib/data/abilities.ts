@@ -1,5 +1,5 @@
-import type { BuffEmission, ModifierContext } from '../formulas/modifiers';
-import type { GearContext } from '../formulas/timeline';
+import type { GearContext, TickContext } from '../formulas/context';
+import type { BuffEmission } from '../formulas/modifiers';
 
 export type AbilityStyle = 'melee' | 'ranged' | 'magic' | 'necromancy' | 'defence' | 'constitution';
 export type AbilityType = 'Basic' | 'Enhanced' | 'Threshold' | 'Ultimate' | 'Utility' | 'Special';
@@ -11,7 +11,7 @@ export type AbilityTarget = 'Self' | 'Single' | 'Area' | 'Multi' | 'Varies';
  *  has no running "remaining enemy HP over time" model, and building one is out of scope for what
  *  this field needs. Extend with more fields here only if a future ability's damage genuinely
  *  depends on something else about the enemy (not gear, not the player -- see GearContext/
- *  ModifierContext for those). */
+ *  TickContext for those). */
 export interface Enemy {
 	hpPercent: number;
 }
@@ -158,7 +158,7 @@ export interface Ability {
 	// resolveIsBleed in timeline.ts for the exact fallback order. The old fields are NOT deleted
 	// until every ability in this file has been migrated off them.
 	resolve?: (input: {
-		ctx: ModifierContext;
+		ctx: TickContext;
 		gear: GearContext;
 		enemy: Enemy;
 	}) => Partial<{ damagePercent: string | number; hitOffsets: number[]; isBleed: boolean }>;

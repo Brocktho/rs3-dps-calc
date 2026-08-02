@@ -1,18 +1,30 @@
 <script lang="ts">
-	import { bosses, type Boss } from '$lib';
+	import { bosses, type Boss, type HitChanceBreakdown } from '$lib';
 	import Combobox from './Combobox.svelte';
 
 	interface Props {
 		selectedBossName: string;
-		/** Player's hit chance (%) against the selected boss with their current combat
-		 *  style/gear, or null when no boss is selected or the player has no combat style
-		 *  equipped. Computed by the parent, which owns the player's accuracy/gear state. */
-		hitChance?: number | null;
+		/** Player's hit chance against the selected boss with their current combat style/gear
+		 *  (full raw -> adjustments -> cap breakdown for provenance display), or null when no
+		 *  boss is selected or the player has no combat style equipped. Computed by the parent,
+		 *  which owns the player's accuracy/gear state. */
+		hitChance?: HitChanceBreakdown | null;
 	}
 
 	let { selectedBossName = $bindable(), hitChance = null }: Props = $props();
 
 	const selectedBoss = $derived(bosses.find((b) => b.name === selectedBossName) ?? null);
+
+	/** e.g. "Raw 118.8% − Ring of X 10% = 108.8%, capped at 100%" -- only shown when an
+	 *  adjustment actually applied, so the common no-adjustment case stays a plain value. */
+	const hitChanceProvenance = $derived.by(() => {
+		if (!hitChance || hitChance.adjustments.length === 0) return null;
+		const parts = hitChance.adjustments.map(
+			(a) => `${a.amountPercent >= 0 ? '+' : '−'} ${a.source.label} ${Math.abs(a.amountPercent)}%`
+		);
+		const capNote = hitChance.adjusted !== hitChance.final ? `, capped to ${hitChance.final.toFixed(1)}%` : '';
+		return `Raw ${hitChance.raw.toFixed(1)}% ${parts.join(' ')} = ${hitChance.adjusted.toFixed(1)}%${capNote}`;
+	});
 
 	function formatAffinity(value: number): string {
 		return `${value}%`;
@@ -82,10 +94,13 @@
 				</div>
 				<div class="stat-row">
 					<span class="stat-row-label">Your hit chance</span>
-					<span class="stat-row-value"
-						>{selectedBoss && hitChance !== null ? `${hitChance.toFixed(1)}%` : '-'}</span
+					<span class="stat-row-value" title={hitChanceProvenance}
+						>{selectedBoss && hitChance !== null ? `${hitChance.final.toFixed(1)}%` : '-'}</span
 					>
 				</div>
+				{#if hitChanceProvenance}
+					<div class="stat-row hit-chance-provenance">{hitChanceProvenance}</div>
+				{/if}
 			</div>
 		</section>
 
@@ -218,6 +233,11 @@
 	.stat-row-value {
 		color: #e8dcc4;
 		font-weight: 600;
+	}
+
+	.hit-chance-provenance {
+		font-size: 0.72rem;
+		color: #a89a78;
 	}
 
 	.stat-table {

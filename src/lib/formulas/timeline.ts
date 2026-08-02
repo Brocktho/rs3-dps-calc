@@ -3,15 +3,22 @@
  */
 import type { Ability, Enemy } from '../data/abilities';
 import type { CombatStyle } from './abilityDamage';
+import {
+	DEFAULT_TICK_CONTEXT,
+	NO_GEAR_CONTEXT,
+	type GearContext,
+	type TickContext
+} from './context';
 import type {
 	BuffEmission,
 	BuffWindowModifier,
 	Modifier,
-	ModifierContext,
 	NumericEffect,
 	PassiveModifier
 } from './modifiers';
 import { resolveResource, type ResourceDefinition, type ResourceState } from './resources';
+
+export type { GearContext, GlobalContext, TickContext } from './context';
 
 export const TICK_SECONDS = 0.6;
 export const GCD_TICKS = 3;
@@ -25,27 +32,10 @@ export interface TimelinePlacement {
 	startTick: number;
 }
 
-export interface GearContext {
-	isTwoHanded: boolean;
-	hasOffHandWeapon: boolean;
-	equippedCapeName: string | null;
-}
-
 /** Default enemy assumption for callers that don't care about HP-gated damage (e.g. tests/call
  *  sites unrelated to Punish) -- full health, matching what "no assumption entered yet" should
  *  mean in the UI too. */
 export const DEFAULT_ENEMY: Enemy = { hpPercent: 100 };
-
-/** Default player global-state context for callers that don't care about an ability's `resolve`
- *  output depending on it (e.g. Asphyxiate's Tumeken's-resplendence set check) -- no sets worn, no
- *  unlocks active, matching every other "no assumption entered" default in this file. */
-const DEFAULT_MODIFIER_CONTEXT: ModifierContext = {
-	combatStyle: null,
-	ringOfVigourActive: false,
-	furyOfTheSmallActive: false,
-	setPieceCounts: {},
-	hasMeleeWeaponEquipped: false
-};
 
 /**
  * A small set of abilities (15 of 142, e.g. Dive, Bladed Dive, Surge, quiver ammo swaps, High
@@ -127,7 +117,7 @@ export function resolveDamagePercent(
 	ability: Ability,
 	gear: GearContext,
 	enemy: Enemy = DEFAULT_ENEMY,
-	ctx: ModifierContext = DEFAULT_MODIFIER_CONTEXT
+	ctx: TickContext = DEFAULT_TICK_CONTEXT
 ): string | null {
 	const resolved = ability.resolve?.({ ctx, gear, enemy })?.damagePercent;
 	const raw =
@@ -178,7 +168,7 @@ export function resolveHitOffsets(
 	ability: Ability,
 	gear: GearContext,
 	enemy: Enemy = DEFAULT_ENEMY,
-	ctx: ModifierContext = DEFAULT_MODIFIER_CONTEXT
+	ctx: TickContext = DEFAULT_TICK_CONTEXT
 ): number[] {
 	const resolved = ability.resolve?.({ ctx, gear, enemy })?.hitOffsets;
 	if (resolved !== undefined) return resolved;
@@ -207,7 +197,7 @@ export function resolveIsBleed(
 	ability: Ability,
 	gear: GearContext = NO_GEAR_CONTEXT,
 	enemy: Enemy = DEFAULT_ENEMY,
-	ctx: ModifierContext = DEFAULT_MODIFIER_CONTEXT
+	ctx: TickContext = DEFAULT_TICK_CONTEXT
 ): boolean {
 	const resolved = ability.resolve?.({ ctx, gear, enemy })?.isBleed;
 	if (resolved !== undefined) return resolved;
@@ -224,7 +214,7 @@ export function abilityDamageForPlacement(
 	adTotal: number,
 	gear: GearContext,
 	enemy: Enemy = DEFAULT_ENEMY,
-	ctx: ModifierContext = DEFAULT_MODIFIER_CONTEXT
+	ctx: TickContext = DEFAULT_TICK_CONTEXT
 ): number {
 	const raw = resolveDamagePercent(ability, gear, enemy, ctx);
 	const multiplier = parseDamageMultiplier(raw);
@@ -243,7 +233,7 @@ export function abilityDealsDamage(
 	ability: Ability,
 	gear: GearContext,
 	enemy: Enemy = DEFAULT_ENEMY,
-	ctx: ModifierContext = DEFAULT_MODIFIER_CONTEXT
+	ctx: TickContext = DEFAULT_TICK_CONTEXT
 ): boolean {
 	return parseDamageMultiplier(resolveDamagePercent(ability, gear, enemy, ctx)) !== null;
 }
@@ -686,7 +676,7 @@ export const HAVOC_EMISSION: BuffEmission = {
 	buffName: 'Havoc',
 	subject: 'player',
 	trigger: 'self',
-	// Evaluated once per resolution against the player's current gear (ModifierContext), not per
+	// Evaluated once per resolution against the player's current gear (TickContext), not per
 	// placement -- "at least 2 pieces of Vestments of havoc armour equipped."
 	gearCondition: (ctx) => (ctx.setPieceCounts[VESTMENTS_OF_HAVOC_SET_NAME] ?? 0) >= 2,
 	durationTicks: HAVOC_DURATION_TICKS, // 30 ticks (18s)
@@ -917,7 +907,7 @@ export function resolveEmittedBuffs(
 	abilities: Ability[],
 	timelineLength: number,
 	gear: GearContext,
-	ctx: ModifierContext
+	ctx: TickContext
 ): { buffs: ResolvedBuff[]; consumptions: EmittedBuffConsumption[] } {
 	const buffs: ResolvedBuff[] = [];
 	const consumptions: EmittedBuffConsumption[] = [];
@@ -1176,7 +1166,7 @@ export function resolveAllBuffs(
 	abilities: Ability[],
 	timelineLength: number,
 	setPieceCounts: Record<string, number> = {},
-	gear: GearContext = { isTwoHanded: true, hasOffHandWeapon: false, equippedCapeName: null }
+	gear: GearContext = NO_GEAR_CONTEXT
 ): {
 	buffs: ResolvedBuff[];
 	havocInstantBursts: HavocInstantBurst[];
@@ -1735,7 +1725,7 @@ export function damageByTick(
 	deathsSwiftnessBuffs: readonly ResolvedBuff[] = [],
 	hitChanceByStyle: Partial<Record<CombatStyle, number>> = {},
 	enemy: Enemy = DEFAULT_ENEMY,
-	ctx: ModifierContext = DEFAULT_MODIFIER_CONTEXT
+	ctx: TickContext = DEFAULT_TICK_CONTEXT
 ): number[] {
 	const result = new Array(timelineLength).fill(0);
 	const channels = resolveChannels(placements, abilities, timelineLength, bleedPlacementIds);
@@ -1949,16 +1939,6 @@ export const HIT_COUNT_OVERRIDES: Record<string, number> = {
 	Ricochet: 3
 };
 
-/** Gear context to assume when the caller doesn't have (or care about) one -- e.g. existing call
- *  sites that pre-date hitCountVariants and don't pass gear at all. Matches resolveAllBuffs'
- *  default (always two-handed, no cape), so a gear-dependent hit count falls back to each
- *  ability's "Any" entry rather than silently guessing a cape is worn. */
-const NO_GEAR_CONTEXT: GearContext = {
-	isTwoHanded: true,
-	hasOffHandWeapon: false,
-	equippedCapeName: null
-};
-
 /**
  * How many times `ability` hits, for purposes like Imbue: Shadows' per-hit adrenaline bonus --
  * layered resolution: `hitCountVariants` for the player's current gear (e.g. Deadshot's 4-vs-8
@@ -2051,7 +2031,7 @@ export function parsePerTickAdrenaline(ability: Ability): PerTickAdrenaline | nu
 /**
  * Ring of Vigour: refunds a flat 10 adrenaline immediately after an Ultimate ability's cost
  * resolves -- a passive modifier, always active while the unlock is toggled on (see
- * ModifierContext.ringOfVigourActive), regardless of anything happening on the timeline.
+ * GlobalContext.ringOfVigourActive), regardless of anything happening on the timeline.
  */
 export const RING_OF_VIGOUR_MODIFIER: PassiveModifier = {
 	kind: 'passive',
@@ -2061,7 +2041,7 @@ export const RING_OF_VIGOUR_MODIFIER: PassiveModifier = {
 	effect: { operation: 'add', value: RING_OF_VIGOUR_REFUND_PERCENT },
 	source: { label: 'Ring of Vigour' },
 	appliesToAbility: (ability) => ability.type === 'Ultimate' && ability.adrenaline < 0,
-	isActive: (ctx) => ctx.ringOfVigourActive
+	isActive: (ctx) => ctx.global.ringOfVigourActive
 };
 
 /**
@@ -2091,7 +2071,7 @@ export const IMBUE_SHADOWS_ADRENALINE_MODIFIER: BuffWindowModifier = {
 	effect: { operation: 'add', value: IMBUE_SHADOWS_ADRENALINE_PER_HIT },
 	source: { label: 'Imbue: Shadows' },
 	appliesToAbility: (ability) => ability.target !== 'Self' && ability.target !== 'Varies',
-	requiresContext: (ctx) => ctx.combatStyle === 'ranged',
+	requiresContext: (ctx) => ctx.global.combatStyle === 'ranged',
 	applicationGranularity: 'perHit'
 };
 
@@ -2142,7 +2122,7 @@ export const FURY_OF_THE_SMALL_MODIFIER: PassiveModifier = {
 	effect: { operation: 'add', value: FURY_OF_THE_SMALL_BONUS },
 	source: { label: 'Fury of the Small' },
 	appliesToAbility: (ability) => ability.adrenaline > 0,
-	isActive: (ctx) => ctx.furyOfTheSmallActive
+	isActive: (ctx) => ctx.global.furyOfTheSmallActive
 };
 
 /** Vestments of havoc's 2-piece "Herald of Chaos" regen: 15% adrenaline spread evenly over
@@ -2170,7 +2150,7 @@ export const HAVOC_REGEN_MODIFIER: BuffWindowModifier = {
  *  A plain cap override, resolved by the same generic `cap` aspect Berserk's Bloodlust-cap raise
  *  already uses -- gated on the generalized `setPieceCounts` context rather than a per-set boolean,
  *  so future set effects that raise a resource's cap need only a new Modifier entry, not new
- *  ModifierContext fields or resolver code. */
+ *  TickContext fields or resolver code. */
 export const VESTMENTS_OF_HAVOC_4PC_ADRENALINE_CAP = 120;
 
 export const VESTMENTS_OF_HAVOC_4PC_CAP_MODIFIER: PassiveModifier = {
@@ -2250,10 +2230,9 @@ export function resolveAdrenaline(
 		setPieceCounts,
 		gear
 	);
-	const ctx: ModifierContext = {
-		combatStyle,
-		ringOfVigourActive,
-		furyOfTheSmallActive,
+	const ctx: TickContext = {
+		global: { combatStyle, ringOfVigourActive, furyOfTheSmallActive },
+		gear,
 		setPieceCounts,
 		hasMeleeWeaponEquipped
 	};
@@ -2376,12 +2355,9 @@ export function resolveBloodlust(
 	setPieceCounts: Record<string, number> = {}
 ): ResourceState[] {
 	const { buffs } = resolveAllBuffs(placements, abilities, timelineLength, setPieceCounts);
-	const ctx: ModifierContext = {
-		combatStyle: null,
-		ringOfVigourActive: false,
-		furyOfTheSmallActive: false,
-		setPieceCounts,
-		hasMeleeWeaponEquipped: false
+	const ctx: TickContext = {
+		...DEFAULT_TICK_CONTEXT,
+		setPieceCounts
 	};
 	return resolveResource(
 		BLOODLUST_DEFINITION,

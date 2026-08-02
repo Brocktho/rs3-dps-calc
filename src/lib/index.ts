@@ -1,6 +1,8 @@
 // place files you want to import through the `$lib` alias in this folder.
 
 export * from './formulas/abilityDamage';
+export * from './formulas/context';
+export * from './formulas/gear';
 export * from './formulas/armourRating';
 export * from './formulas/accuracy';
 export * from './formulas/skillBoost';
